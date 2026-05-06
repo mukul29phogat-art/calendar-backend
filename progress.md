@@ -29,6 +29,43 @@ Next part: X.Y+1
 
 ---
 
+## Part 0.3 (Series 0) — Dual HikariCP datasources — STATUS: ✅ done
+Date: 2026-05-06
+Operator: Mukul Phogat
+
+What got built:
+- `pom.xml` adds `spring-boot-starter-jdbc`, `org.postgresql:postgresql:42.7.4`, and `maven-failsafe-plugin` (binds to `integration-test` + `verify` so `*IT` tests run during `mvn verify`).
+- `application.yml` rewritten with two datasource sections: `spring.datasource.calendar` (URL → 5434, pool=20 RW, pool-name `calendar-pool`) and `spring.datasource.platform` (URL → 5433, pool=5 RO, pool-name `platform-pool`).
+- `DatasourceConfig.java` (`config/`) — `@Primary` calendar `HikariDataSource` + `JdbcTemplate`; platform `HikariDataSource` + `JdbcTemplate` qualifier-named `platformJdbcTemplate`.
+- `PlatformDbHealthIndicator.java` (`health/`) — `@Component("platformDb")` runs `SELECT 1` against platform.
+- `DatasourceConfigIT.java` — 2 tests (calendar `SELECT 1` returns 1, platform `SELECT count(*) FROM users` returns 7) running in failsafe phase against compose-managed Postgres.
+
+Files changed (count: 5):
+- `pom.xml` (modified) — 2 new deps + failsafe plugin
+- `src/main/resources/application.yml` (modified) — full rewrite
+- `src/main/java/com/childcarewow/calendar/config/DatasourceConfig.java` (new)
+- `src/main/java/com/childcarewow/calendar/health/PlatformDbHealthIndicator.java` (new)
+- `src/test/java/com/childcarewow/calendar/DatasourceConfigIT.java` (new)
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS in 21s
+- [x] Surefire: 1 test (`CalendarApplicationTests.contextLoads`) green
+- [x] Failsafe: 2 tests (`DatasourceConfigIT`) green
+- [x] App boot logs show `platform-pool - Start completed.` and `calendar-pool - Start completed.`
+- [x] `/actuator/health` shows: `db.calendarDataSource` UP, `db.platformDataSource` UP, custom `platformDb` UP, overall `status: UP`
+- [x] `docker stop ccw-cal-platform-db` → `/actuator/health` overall `DOWN`, `platformDataSource` DOWN with `Failed to obtain JDBC Connection`, `calendarDataSource` still UP
+- [x] `docker start ccw-cal-platform-db` (waited for healthy) → `/actuator/health` UP again on both
+
+Notes / surprises (deviations):
+- **Playbook YAML key was wrong:** the spec used `jdbc-url:` under `spring.datasource.calendar`, but `DataSourceProperties.determineUrl()` reads `url`. Build failed with `Failed to determine suitable jdbc url` and ApplicationContext failed to load until `jdbc-url:` was changed to `url:`. **Fix is committed verbatim**; the playbook should be updated to match.
+- The auto-registered Spring `db` health composite now includes BOTH datasources (`db.calendarDataSource` + `db.platformDataSource`) — Spring Boot 3.x auto-detects all `DataSource` beans, not just `@Primary`. The custom `PlatformDbHealthIndicator` (`platformDb` key) is somewhat redundant with `db.platformDataSource` but matches the playbook spec; left in place for explicit naming.
+- Carry-over from Part 0.2: calendar URL is `localhost:5434`, not 5432 (host PG 18 conflict).
+- `CalendarApplicationTests.contextLoads()` now requires the compose to be up (Hikari eagerly init's connections at context start). Add `@TestConfiguration` with H2/Testcontainers later if we want self-contained unit tests; not required for Series 0.
+
+Next part: **Part 0.4 (Series 0) — Flyway against the calendar datasource only** (D8 schema bootstrap; will populate the empty calendar DB).
+
+---
+
 ## Part 0.2 (Series 0) — Docker Compose with two Postgres databases — STATUS: ✅ done
 Date: 2026-05-06
 Operator: Mukul Phogat
