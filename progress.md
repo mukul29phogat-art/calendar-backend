@@ -29,6 +29,42 @@ Next part: X.Y+1
 
 ---
 
+## Part 0.4 (Series 0) — Flyway against the calendar datasource only — STATUS: ✅ done
+Date: 2026-05-06
+Operator: Mukul Phogat
+
+What got built:
+- `pom.xml` adds `flyway-core 10.20.1`, `flyway-database-postgresql 10.20.1` (required for Flyway 10+ on Postgres 15), and `flyway-maven-plugin 10.20.1` with URL pinned to `localhost:5434`.
+- `application.yml` `spring.flyway` block: `enabled: true`, URL/user/password resolved from `${spring.datasource.calendar.*}`, `locations: classpath:db/migration`, `baseline-on-migrate: false`.
+- `V1__placeholder.sql` — creates `_flyway_smoke` (id pk, created_at default now), inserts id=1. Will be superseded by V2 (events) in Part 1.1.
+- `FlywayMigrationIT.java` — asserts `flyway_schema_history` has V1 with success=true, asserts `_flyway_smoke` has 1 row. Runs against the live calendar-db via `@Autowired JdbcTemplate` (Testcontainers deferred — see deviations).
+
+Files changed (count: 5, +3 new −1 deleted):
+- `pom.xml` (modified) — Flyway deps + maven plugin
+- `src/main/resources/application.yml` (modified) — spring.flyway block
+- `src/main/resources/db/migration/V1__placeholder.sql` (new)
+- `src/main/resources/db/migration/.gitkeep` (deleted — superseded by V1)
+- `src/test/java/com/childcarewow/calendar/FlywayMigrationIT.java` (new)
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS in 21s
+- [x] Surefire: 1 (`CalendarApplicationTests.contextLoads`); Failsafe: 4 (`DatasourceConfigIT` 2 + `FlywayMigrationIT` 2)
+- [x] `mvn flyway:info` → `Schema version: 1`, V1 placeholder Success
+- [x] `psql calendar -c 'SELECT * FROM flyway_schema_history'` → V1 success=t
+- [x] `psql calendar -c 'SELECT * FROM _flyway_smoke'` → 1 row id=1
+- [x] `psql platform -c 'SELECT * FROM _flyway_smoke'` → `ERROR: relation "_flyway_smoke" does not exist` (Flyway never touched platform — by design)
+- [x] `psql platform -c '\dt flyway_schema_history'` → no relation
+
+Notes / surprises (deviations):
+- **Testcontainers blocked on Windows + Docker Desktop 4.71.** Playbook step 6 spec'd a Testcontainers-driven IT for fresh-container isolation. The Testcontainers `DockerClientProviderStrategy` returns HTTP 400 from every named pipe attempted (`docker_engine`, `dockerDesktopLinuxEngine`, `docker_cli`); Docker Desktop's API responds with a degraded JSON instead of accepting the connection. Rewrote `FlywayMigrationIT` to use the live calendar-db via `@Autowired JdbcTemplate`. Testcontainers deps in `pom.xml` are kept **commented out** with a TODO to re-enable in P0.6 — CI's GitHub Actions Linux runner has a clean Unix Docker socket where Testcontainers works without the Windows pipe weirdness. Saved as project memory `backend_part_0_4_testcontainers_windows.md`.
+- **Flyway plugin URL is 5434**, not 5432 (Part 0.2 host-port deviation carried forward).
+- Spring Boot's auto-config runs Flyway against the @Primary calendar DataSource on context startup. Idempotent: subsequent `mvn verify` runs see V1 already applied, no-op. The `_flyway_smoke` table persists in dev calendar-db until volume is wiped (`docker compose down -v`).
+- The `application.yml` `spring.flyway.url` placeholder `${spring.datasource.calendar.url}` resolves correctly because Spring Boot resolves placeholders before binding `FlywayProperties`.
+
+Next part: **Part 0.5 (Series 0) — Code quality tooling: Spotless + JaCoCo + Failsafe.** (Naming reminder: this is Series-0 Part 0.5, not the pre-flight P0.5 we did earlier; same number, different section of the playbook.)
+
+---
+
 ## Part 0.3 (Series 0) — Dual HikariCP datasources — STATUS: ✅ done
 Date: 2026-05-06
 Operator: Mukul Phogat
