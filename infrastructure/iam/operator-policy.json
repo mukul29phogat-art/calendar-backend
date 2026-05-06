@@ -1,0 +1,84 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ServiceWildcards",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:*",
+        "ecr:*",
+        "secretsmanager:*",
+        "cloudwatch:*",
+        "logs:*",
+        "acm:*",
+        "elasticloadbalancing:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "RDSDescribe",
+      "Effect": "Allow",
+      "Action": ["rds:Describe*"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "RDSCreateRequireProjectTag",
+      "Effect": "Allow",
+      "Action": ["rds:CreateDBInstance", "rds:AddTagsToResource"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:RequestTag/Project": "ChildcareWowCalendar"
+        }
+      }
+    },
+    {
+      "Sid": "RDSModifyDeleteOnTaggedOnly",
+      "Effect": "Allow",
+      "Action": ["rds:ModifyDBInstance", "rds:DeleteDBInstance"],
+      "Resource": "*",
+      "Condition": {
+        "StringEquals": {
+          "aws:ResourceTag/Project": "ChildcareWowCalendar"
+        }
+      }
+    },
+    {
+      "Sid": "IAMCalendarRolesOnly",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:AttachRolePolicy",
+        "iam:PassRole",
+        "iam:GetRole",
+        "iam:ListRolePolicies",
+        "iam:ListAttachedRolePolicies"
+      ],
+      "Resource": "arn:aws:iam::*:role/ChildcareWowCalendar*"
+    },
+    {
+      "Sid": "Route53CalendarSubdomainOnly",
+      "Effect": "Allow",
+      "Action": ["route53:ChangeResourceRecordSets"],
+      "Resource": "arn:aws:route53:::hostedzone/*",
+      "Condition": {
+        "StringLike": {
+          "route53:RecordSetName": [
+            "*.calendar.childcarewow.com.",
+            "calendar.childcarewow.com."
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "Route53Read",
+      "Effect": "Allow",
+      "Action": [
+        "route53:ListHostedZones",
+        "route53:GetHostedZone",
+        "route53:ListResourceRecordSets"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
