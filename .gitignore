@@ -1,0 +1,82 @@
+# --- Java ---
+*.class
+*.ctxt
+hs_err_pid*
+replay_pid*
+.mtj.tmp/
+
+# --- Package files ---
+*.jar
+*.war
+*.nar
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# (allow Maven Wrapper jar — needed for ./mvnw on fresh clones)
+!.mvn/wrapper/maven-wrapper.jar
+
+# --- Maven ---
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+pom.xml.next
+release.properties
+dependency-reduced-pom.xml
+buildNumber.properties
+.mvn/timing.properties
+
+# --- Spring Boot ---
+HELP.md
+application-local.yml
+application-local.yaml
+application-local.properties
+
+# --- IntelliJ IDEA ---
+.idea/
+*.iml
+*.iws
+*.ipr
+out/
+
+# --- Eclipse ---
+.classpath
+.project
+.settings/
+.metadata/
+bin/
+.loadpath
+.recommenders
+local.properties
+
+# --- VS Code ---
+.vscode/
+
+# --- NetBeans ---
+nbproject/private/
+nbbuild/
+dist/
+nbdist/
+.nb-gradle/
+
+# --- Logs ---
+*.log
+logs/
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- Env / secrets ---
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+*.p12
+*.pfx
+secrets/
