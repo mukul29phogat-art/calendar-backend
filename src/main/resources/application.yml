@@ -13,6 +13,13 @@ management:
 spring:
   application:
     name: calendar-backend
+  flyway:
+    enabled: true
+    url: ${spring.datasource.calendar.url}
+    user: ${spring.datasource.calendar.username}
+    password: ${spring.datasource.calendar.password}
+    locations: classpath:db/migration
+    baseline-on-migrate: false
   datasource:
     calendar:
       # Host port 5434 (not 5432) — operator has a host PostgreSQL 18 service
