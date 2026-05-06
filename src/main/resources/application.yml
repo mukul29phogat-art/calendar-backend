@@ -6,7 +6,31 @@ management:
     web:
       exposure:
         include: health,info
+  endpoint:
+    health:
+      show-details: always
 
 spring:
   application:
     name: calendar-backend
+  datasource:
+    calendar:
+      # Host port 5434 (not 5432) — operator has a host PostgreSQL 18 service
+      # bound to 5432; see Part 0.2 deviation in progress.md.
+      url: jdbc:postgresql://localhost:5434/calendar
+      username: calendar
+      password: calendar
+      driver-class-name: org.postgresql.Driver
+      hikari:
+        maximum-pool-size: 20
+        pool-name: calendar-pool
+    platform:
+      url: jdbc:postgresql://localhost:5433/platform
+      username: platform
+      password: platform
+      driver-class-name: org.postgresql.Driver
+      hikari:
+        maximum-pool-size: 5
+        pool-name: platform-pool
+        read-only: true
+        auto-commit: true
