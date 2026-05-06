@@ -29,6 +29,43 @@ Next part: X.Y+1
 
 ---
 
+## Part 0.1 (Series 0) — Maven + Spring Boot scaffold — STATUS: ✅ done
+Date: 2026-05-06
+Operator: Mukul Phogat
+
+What got built:
+- `pom.xml` at repo root: `groupId=com.childcarewow`, `artifactId=calendar-backend`, version `0.1.0-SNAPSHOT`, parent `spring-boot-starter-parent` 3.3.5, Java 21, `maven-compiler-plugin` with `-Werror -Xlint:all,-processing`
+- 3 dependencies: `spring-boot-starter-web`, `spring-boot-starter-actuator`, `spring-boot-starter-test` (test scope)
+- `CalendarApplication.java`: minimal `@SpringBootApplication`
+- `application.yml`: server port 8080, expose `health` + `info` actuators
+- `CalendarApplicationTests.java`: `@SpringBootTest contextLoads()` smoke
+
+Files changed (count: 6, net +4):
+- `pom.xml` (new)
+- `src/main/java/com/childcarewow/calendar/CalendarApplication.java` (new)
+- `src/main/resources/application.yml` (new)
+- `src/test/java/com/childcarewow/calendar/CalendarApplicationTests.java` (new)
+- `src/main/java/com/childcarewow/calendar/.gitkeep` (deleted — superseded by Application.java)
+- `src/test/java/com/childcarewow/calendar/.gitkeep` (deleted — superseded by Tests.java)
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS
+- [x] `Tests run: 1, Failures: 0, Errors: 0, Skipped: 0`
+- [x] `mvn spring-boot:run` log: `Started CalendarApplication in 1.668 seconds`
+- [x] `curl localhost:8080/actuator/health` → `{"status":"UP"}`
+- [x] `curl localhost:8080/foo` → HTTP 404 (Spring handling, not connection-refused)
+- [x] Zero compiler warnings under `-Werror` (only JVM runtime warnings from byte-buddy agent loader, surfaced during test execution; not blocking)
+
+Notes / surprises:
+- Spring Boot pinned to **3.3.5** per playbook. Later 3.3.x patches likely exist (today is 2026-05-06); bump opportunistically if a security advisory drops.
+- First `mvn verify` downloaded ~80 MB of dependencies from Maven Central. Subsequent runs hit the local `~/.m2` cache.
+- `db/migration/.gitkeep` retained — Flyway migrations land in Series 0 / Part 0.4 (D8 schema bootstrap).
+- Branch convention switched from `bootstrap/*` (pre-flight) to `series0/*` for this Part. Same review/merge flow, just different namespace.
+
+Next part: **Part 0.2 (Series 0) — Docker Compose with two Postgres databases** (`calendar-db` on 5432 + `platform-db` on 5433)
+
+---
+
 ## P0.5 — Repository skeleton + progress.md — STATUS: ✅ done
 Date: 2026-05-06
 Operator: Mukul Phogat
