@@ -29,6 +29,45 @@ Next part: X.Y+1
 
 ---
 
+## Part 0.5 (Series 0) — Code quality tooling: Spotless + JaCoCo + Failsafe — STATUS: ✅ done
+Date: 2026-05-06
+Operator: Mukul Phogat
+
+What got built:
+- `pom.xml` adds three plugin blocks:
+  - `spotless-maven-plugin 2.43.0` (Google Java format, `check` goal bound to default lifecycle phase)
+  - `jacoco-maven-plugin 0.8.12` (`prepare-agent` + `report` + `check` with bundle-level 80% line coverage gate, `haltOnFailure: true`)
+  - `maven-failsafe-plugin` gains explicit `<configuration><includes><include>**/*IT.java</include></includes></configuration>`
+- `.editorconfig` at repo root (Google conventions: LF, UTF-8, 2-space, trim trailing whitespace, 100-char max line for code)
+- `PlatformDbHealthIndicatorTest.java` — Surefire unit test mocking `JdbcTemplate`; covers both UP and DOWN branches of `health()`. Necessary to keep bundle coverage ≥ 80% on the small initial codebase.
+
+Files changed (count: 5, +2 new):
+- `pom.xml` (modified)
+- `.editorconfig` (new)
+- `src/test/java/com/childcarewow/calendar/health/PlatformDbHealthIndicatorTest.java` (new)
+- `src/test/java/com/childcarewow/calendar/DatasourceConfigIT.java` (reformatted by spotless:apply)
+- `src/test/java/com/childcarewow/calendar/FlywayMigrationIT.java` (reformatted by spotless:apply)
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS in 18s
+- [x] Spotless: 7 files clean
+- [x] Surefire: `CalendarApplicationTests` (1) + `PlatformDbHealthIndicatorTest` (2) green
+- [x] Failsafe: `DatasourceConfigIT` (2) + `FlywayMigrationIT` (2) green
+- [x] JaCoCo: "All coverage checks have been met" (≥80% bundle line coverage on 3 main classes)
+- [x] Coverage report at `target/site/jacoco/index.html`
+- [x] Deliberate trailing-whitespace edit → `mvn spotless:check` fails (verified locally; `git checkout` reverted; not committed)
+- [x] `find . -name "*IT.java"` returns the two failsafe ITs from Parts 0.3 and 0.4
+
+Notes / surprises:
+- Spotless plugin asked for Google Java format `1.22.0` in pom config but resolved `1.19.2` (the plugin's default). No functional difference for our small codebase; left as-is. If future formatting drift, force `<googleJavaFormat><version>1.22.0</version>` precedence by upgrading spotless-maven-plugin past `2.43.0`.
+- First `mvn verify` after writing `PlatformDbHealthIndicatorTest.java` failed: Spotless flagged CRLF line endings (Windows default) on the new file. Re-running `mvn spotless:apply` normalized to LF. Future file writes on Windows go through the same path; `spotless:apply` is the canonical fix.
+- JaCoCo bundle has 3 classes: `CalendarApplication`, `DatasourceConfig`, `PlatformDbHealthIndicator`. All three above the 80% line threshold.
+- The `mvn spotless:check` deliberate-failure validation is an ephemeral local test, not a committed artifact.
+
+Next part: **Part 0.6 (Series 0) — GitHub Actions CI workflow**. **Operator action required first:** run `gh auth refresh -h github.com -s workflow` once. The current gh token lacks `workflow` scope; pushing `.github/workflows/ci.yml` will be rejected without it (this is why pre-flight P0.5 also skipped a workflow placeholder). When P0.6 lands, also uncomment the Testcontainers deps in pom.xml — Linux CI runs Docker cleanly where Testcontainers works (memory `backend_part_0_4_testcontainers_windows.md`).
+
+---
+
 ## Part 0.4 (Series 0) — Flyway against the calendar datasource only — STATUS: ✅ done
 Date: 2026-05-06
 Operator: Mukul Phogat
