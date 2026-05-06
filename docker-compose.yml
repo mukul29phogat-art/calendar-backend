@@ -1,0 +1,24 @@
+name: ccw-cal-dev
+
+services:
+  localstack:
+    image: localstack/localstack:latest
+    container_name: ccw-cal-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=iam,sts,secretsmanager,ecs,ecr,s3,logs,cloudwatch,rds,acm,elbv2,route53
+      - PERSISTENCE=1
+      - DEBUG=0
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:4566/_localstack/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 30s
+
+volumes:
+  localstack-data:

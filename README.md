@@ -4,7 +4,7 @@ Backend service for the **ChildcareWow School Operations Calendar**.
 
 ## Status
 
-Bootstrap repo (P0.4 of the backend build). Empty until **P0.1** populates the Maven + Spring Boot scaffold.
+P0.4 + P0.1 complete. AWS surface is **emulated via LocalStack** during dev — real AWS is deferred to Series 11. Spring Boot scaffold lands in **Part 0.1** (Series 0).
 
 ## Namespace note
 
@@ -28,7 +28,34 @@ The architecture spec, locked decisions, and execution playbook all live in the 
 
 ## Run locally
 
-See **Part 0.0** (toolchain setup) and **Part 1.0.1** (Postgres + Docker Compose) of `implementation_plan.md` in the parent repo.
+Toolchain setup: see **Part 0.0** of `implementation_plan.md` in the parent repo.
+
+### LocalStack (emulated AWS)
+
+```bash
+# 1. Start LocalStack
+docker compose up -d localstack
+
+# 2. Verify it's healthy
+curl http://localhost:4566/_localstack/health
+
+# 3. Bootstrap IAM user, policy, and Secrets Manager placeholders
+./infrastructure/localstack/bootstrap.sh
+```
+
+The bootstrap script is **idempotent** — re-run it any time. AWS CLI profile `childcarewow-calendar` must exist locally (one-time setup; see CLAUDE.md §0 in the parent repo).
+
+**State persistence:** the LocalStack container uses a named Docker volume (`localstack-data`). State survives container restarts. To wipe and start fresh:
+
+```bash
+docker compose down -v
+docker compose up -d localstack
+./infrastructure/localstack/bootstrap.sh
+```
+
+### Postgres + Spring Boot
+
+Land in Part 0.1 + Part 1.0.1 of the playbook. This README will be updated then.
 
 ## Progress log
 
