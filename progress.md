@@ -29,6 +29,39 @@ Next part: X.Y+1
 
 ---
 
+## Part 0.2 (Series 0) — Docker Compose with two Postgres databases — STATUS: ✅ done
+Date: 2026-05-06
+Operator: Mukul Phogat
+
+What got built:
+- `calendar-db` (Postgres 15-alpine, container port 5432, host port **5434** — see deviation), empty schema; Flyway will populate in Part 0.4.
+- `platform-db` (Postgres 15-alpine, container port 5432, host port 5433), seeded on first init via `docker/platform-seed.sql` from `/docker-entrypoint-initdb.d/`.
+- Canonical seed (1 org, 2 schools, 4 classrooms, 7 users, 4 students, 2 student_parents) with fixed UUIDs matching `Events_CCW/src/data/seed.ts`. Backend integration tests (Series 4+) reference these IDs.
+- Named Docker volumes (`calendar-db-data`, `platform-db-data`) so data persists across `docker compose down`/`up`.
+
+Files changed (count: 3, +1 new):
+- `docker-compose.yml` (modified) — adds `calendar-db` and `platform-db` services to the existing LocalStack stanza
+- `docker/platform-seed.sql` (new) — schema + seed
+- `.gitignore` (modified) — adds `postgres-data/` (we use named volumes, but per playbook for completeness)
+
+Validation (via `docker exec ... psql ...`, since host `psql` install is still deferred):
+- [x] Both DBs healthy in ~10s after `docker compose up -d calendar-db platform-db`
+- [x] `\dt` on calendar DB → "Did not find any relations" (empty as expected)
+- [x] `SELECT count(*) FROM users` on platform DB → **7**
+- [x] `SELECT count(*) FROM students` on platform DB → **4**
+- [x] All 6 tables row-count match seed: 1 org, 2 schools, 4 classrooms, 7 users, 4 students, 2 student_parents
+- [x] `docker compose stop && rm && up -d` preserves data (counts unchanged after restart — volumes persistent, init script doesn't re-run)
+
+Notes / surprises (deviations):
+- **Host port for `calendar-db` is 5434 instead of 5432.** The operator has a Windows service `postgresql-x64-18` (PostgreSQL 18) running on 5432; pg_ctl PID 5540, parent of postgres PID 7760. Stopping the host service was avoided to keep the user's other dev tooling working. Container internal port stays at 5432; only the host binding shifts. **Part 0.3 `application.yml` must use `jdbc:postgresql://localhost:5434/calendar`** instead of 5432. Recorded as the canonical deviation.
+- `platform-db` host port is 5433 as in playbook (free).
+- Validations done via `docker exec` rather than host `psql`. Per memory `backend_p00_deferred_installs.md`, psql install is still deferred until needed; `docker exec` is the documented workaround. Install whenever convenient via `winget install PostgreSQL.PostgreSQL.16` (UAC).
+- `postgres-data/` in `.gitignore` is a no-op for now (we use named volumes, not bind mounts), but committed per playbook.
+
+Next part: **Part 0.3 (Series 0) — Dual HikariCP datasources** — adds `org.springframework.boot:spring-boot-starter-jdbc` + Postgres driver to `pom.xml`, configures two `HikariDataSource` beans (calendar pool=20, platform pool=5 read-only), expands `application.yml` to wire both, adds `PlatformDbHealthIndicator`, and writes an integration test.
+
+---
+
 ## Part 0.1 (Series 0) — Maven + Spring Boot scaffold — STATUS: ✅ done
 Date: 2026-05-06
 Operator: Mukul Phogat
