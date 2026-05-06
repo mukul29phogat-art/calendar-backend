@@ -31,6 +31,14 @@ if [ ! -f "$POLICY_FILE" ]; then
   exit 1
 fi
 
+# Windows + Git Bash: AWS CLI is a native Windows binary and cannot read
+# /c/... paths. Convert to Windows-style for the file:// URI.
+if command -v cygpath >/dev/null 2>&1; then
+  POLICY_FILE_NATIVE=$(cygpath -w "$POLICY_FILE")
+else
+  POLICY_FILE_NATIVE="$POLICY_FILE"
+fi
+
 echo "==> Endpoint: $ENDPOINT"
 echo "==> Profile:  $PROFILE"
 echo "==> Region:   $REGION"
@@ -62,9 +70,9 @@ if "${AWSCMD[@]}" iam get-policy --policy-arn "$POLICY_ARN" >/dev/null 2>&1; the
   for v in $EXISTING_VERSIONS; do
     "${AWSCMD[@]}" iam delete-policy-version --policy-arn "$POLICY_ARN" --version-id "$v" || true
   done
-  "${AWSCMD[@]}" iam create-policy-version --policy-arn "$POLICY_ARN" --policy-document "file://${POLICY_FILE}" --set-as-default >/dev/null
+  "${AWSCMD[@]}" iam create-policy-version --policy-arn "$POLICY_ARN" --policy-document "file://${POLICY_FILE_NATIVE}" --set-as-default >/dev/null
 else
-  "${AWSCMD[@]}" iam create-policy --policy-name CalendarBackendOperator --policy-document "file://${POLICY_FILE}" >/dev/null
+  "${AWSCMD[@]}" iam create-policy --policy-name CalendarBackendOperator --policy-document "file://${POLICY_FILE_NATIVE}" >/dev/null
   echo "    created"
 fi
 
