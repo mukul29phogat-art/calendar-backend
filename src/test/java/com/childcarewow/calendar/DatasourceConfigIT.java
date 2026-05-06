@@ -11,8 +11,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
 @SpringBootTest
 class DatasourceConfigIT {
 
-  @Autowired
-  JdbcTemplate calendarJdbcTemplate;
+  @Autowired JdbcTemplate calendarJdbcTemplate;
 
   @Autowired
   @Qualifier("platformJdbcTemplate")

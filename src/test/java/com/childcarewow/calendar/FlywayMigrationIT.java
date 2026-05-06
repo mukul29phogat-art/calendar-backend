@@ -13,10 +13,10 @@ import org.springframework.jdbc.core.JdbcTemplate;
  * <p>Originally specified in playbook Part 0.4 step 6 to use Testcontainers for fresh-container
  * isolation. Testcontainers does not currently work against Docker Desktop 4.71 on Windows
  * (DockerClientProviderStrategy fails with Status 400 from every available named pipe). Until
- * that's resolved (P0.6 CI runs on Linux where Testcontainers works fine), this IT runs against
- * the live calendar-db managed by docker-compose. Flyway is idempotent, so re-running the test
- * doesn't cause issues; the assertions verify state Flyway should have established on first
- * Spring context load.
+ * that's resolved (P0.6 CI runs on Linux where Testcontainers works fine), this IT runs against the
+ * live calendar-db managed by docker-compose. Flyway is idempotent, so re-running the test doesn't
+ * cause issues; the assertions verify state Flyway should have established on first Spring context
+ * load.
  */
 @SpringBootTest
 class FlywayMigrationIT {
