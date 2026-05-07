@@ -29,6 +29,44 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.8 (Series 3) — `RecurrenceService` MONTHLY + end-of-month snapping — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `RecurrenceService.expand()` now handles `RecurCycle.MONTHLY`. Walks `YearMonth`s from `winStart` to `winEnd` inclusive; for each month snaps `dueDayOfMonth` via `Math.min(d, ym.lengthOfMonth())`; emits the resulting `LocalDate` if within window. Cap at 1000 with `truncated=true` if reached (unreachable in practice — see notes).
+- All four snapping cases from the spec covered:
+  - 31st in non-leap Feb → **Feb 28** (or 29 in leap years).
+  - 31st in 30-day months (Apr/Jun/Sep/Nov) → **the 30th**.
+  - 29th in non-leap Feb → **Feb 28**.
+  - 29th in leap Feb (e.g. 2028) → **Feb 29** (no snap).
+- Validation extended with cycle-specific shape: `MONTHLY` requires `dueDayOfMonth` in `1..31`. Enforced at both `create` and `expand` (defense in depth for legacy rows).
+
+Files changed (count: 2):
+- `src/main/java/com/childcarewow/calendar/recurrence/RecurrenceService.java` — `+expandMonthly()`, `+MONTHLY` arm of cycle switch (replacing `UnsupportedOperationException`), `+`MONTHLY case in `validate()`, `+import java.time.YearMonth`.
+- `src/test/java/com/childcarewow/calendar/recurrence/RecurrenceServiceTest.java` — replaced `monthlyCycleNotYetSupported` (no longer applicable); added 9 MONTHLY-specific tests.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m28s; bundle gate ≥80% line met.
+- [x] `RecurrenceServiceTest` — 36/36 tests green:
+  - Mid-month rule across Jan/Feb/Mar 2026 → three on-the-15th occurrences.
+  - **31st rule** snaps to Feb 28 (non-leap year 2026) and to Apr 30 (30-day month).
+  - **29th rule** snaps to Feb 28 in non-leap; **lands on Feb 29 in leap year 2028**.
+  - Window starting after the snapped day in the first month → first emission is next month.
+  - Missing `dueDayOfMonth` rejected at expand; out-of-range (`32`) rejected at expand; missing rejected at create; out-of-range (`0`) rejected at create.
+- [x] Per-class JaCoCo: `RecurrenceService` 15/494 instr missed (~97%); 0/12 methods (100%).
+- [x] CI green on PR #58 ([run 25504113178](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25504113178)).
+
+Notes / surprises:
+- `YearMonth.atDay(int)` does the work — no need for the playbook's longer formulation `LocalDate.of(year, month, Math.min(...))`. They're equivalent because `atDay` accepts 1..31 and validates against the month length, but we pre-clamp via `Math.min`, so neither path can throw.
+- The "the 31st in leap February" path is implicitly tested by the leap-year 29th test (Feb has 29 days in 2028, so `min(31, 29) = 29`). Made the leap test explicit on the 29th rule because that's the more common gotcha.
+- The MONTHLY truncation path is **structurally unreachable** with valid rules: `MAX_UNTIL_YEARS = 5` × 12 = 60 monthly occurrences max, well under the 1000-cap. The branch exists for defensive parity with WEEKLY/DAILY and to handle direct-DB-tampered rules. JaCoCo flags it as uncovered — accepted.
+- All three cycle implementations (DAILY/WEEKLY/MONTHLY) now share the same coverage shape: ~97% line, 100% method, with the only uncovered branches being defensive cap paths.
+
+Next part: 3.9 — `task_instance_overrides` upsert/get/remove + skipped-occurrence filter applied during `expand`.
+
+---
+
 ## Part 3.7 (Series 3) — `RecurrenceService` WEEKLY expansion — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
