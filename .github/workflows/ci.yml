@@ -60,6 +60,18 @@ jobs:
       - name: Spotless check
         run: mvn -B spotless:check
 
+      - name: Audit-event immutability guard
+        # Part 3.4: nothing in src/main may call save/delete on an
+        # auditEventRepository-typed variable. AuditService.log() uses a
+        # variable named "repo" intentionally; this guard catches casual
+        # adoption of the typed name with a write/delete call.
+        # See docs/security/audit-immutability.md.
+        run: |
+          if grep -rE "auditEventRepository\.(save|delete)" src/main/java; then
+            echo "::error::audit_events is append-only — see docs/security/audit-immutability.md"
+            exit 1
+          fi
+
       - name: Verify (compile + tests + JaCoCo)
         run: mvn -B verify
 
