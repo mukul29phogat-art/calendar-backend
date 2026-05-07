@@ -29,6 +29,56 @@ Next part: X.Y+1
 
 ---
 
+## Part 5.1 (Series 5) — `POST /api/v1/events` (CLASSROOM type) — STATUS: ✅ done · **OPENS SERIES 5**
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `event/EventController` — `POST /api/v1/events` with `policyService.assertCan(actor, "event.create")` (and `event.create.schoolType` for SCHOOL-typed). Annotated `@Audited("EVENT_CREATE", targetType="EVENT")` so every successful create writes one audit row.
+- `event/EventService.create(req, actor)` — orchestrates the full create flow:
+  1. `validateRequest` (end > start strict; classroomId required for CLASSROOM; CUSTOM/SCHOOL deliberately rejected with "not yet supported" message until 5.2/5.3).
+  2. **School-local holiday check** via `TimezoneService.toSchoolLocalDate(startDt.toInstant(), schoolId)` then `isHolidayForSchool` → `EventOnHolidayException` (409). Architecture spec § 3 / § 7.6: never UTC date.
+  3. `PlatformEntityValidator` calls: `assertSchoolExists`, `assertClassroomExists`, `assertClassroomBelongsToSchool`, `assertUserExists` (only if `organizerUserId` is set).
+  4. Build the `Event` entity (orgId from actor, organizerUserId defaults to actor, createdByUserId always actor, `inviteParents` defaults to false), `saveAndFlush` + `em.refresh` so DB-managed `created_at` / `updated_at` come back populated.
+  5. `softFlagService.recomputeForEvent(saved.getId())` — bidirectional DOUBLE_BOOKING pairs in this same transaction.
+  6. `notificationService.dispatchEventCreated(saved)` — stub for now; real impl lands in Part 5.8.
+  7. `EventMapper.toView(saved, softFlagService.findActiveByEntity(EVENT, id))` — response includes the freshly-computed flags inline.
+- `event/CreateEventRequest` record with `jakarta.validation` annotations: `@NotBlank @Size(max=120) title`, `@NotNull` for type/schoolId/startDt/endDt; cross-field rules in service.
+- `event/EventView` — matches the prototype's `CalendarEvent` shape plus `softFlags[]` (trimmed nested record). `@JsonInclude(NON_EMPTY)` drops null/empty fields.
+- `event/EventMapper` — manual mapping (NOT MapStruct, deliberate deviation: one mapping doesn't justify the annotation-processor wiring; revisit in Series 6+).
+- `notification/NotificationService` — stub with `dispatchEventCreated(Event)` no-op + DEBUG log. Real flow (notifications + recipients + holiday-pause + FCM PUSH) lands in 5.8.
+
+Files changed (count: 9, mostly new):
+- `src/main/java/com/childcarewow/calendar/event/{EventController,EventService,CreateEventRequest,EventView,EventMapper}.java`
+- `src/main/java/com/childcarewow/calendar/notification/NotificationService.java`
+- `src/test/java/com/childcarewow/calendar/event/{EventServiceIT,EventControllerTest}.java`
+- `src/test/java/com/childcarewow/calendar/auth/TestJwtSigner.java` — `class` → `public class`, `sign(...)` → `public sign(...)` (cross-package slice tests need it).
+- `docs/openapi.json` — regenerated baseline including the new POST /api/v1/events route + CreateEventRequest + EventView schemas.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m42s; bundle gate ≥80% line met.
+- [x] `EventServiceIT` — 11/11 tests green against real platform + calendar DBs:
+  - Happy path: organizer defaults to actor; explicit organizer overrides; createdByUserId always actor.
+  - Validation: end < start, end == start, missing classroomId for CLASSROOM, CUSTOM type rejected.
+  - Platform: unknown classroom rejected, classroom-in-different-school rejected.
+  - **Holiday check**: insert approved holiday → create on that date throws `EventOnHolidayException`.
+  - **Soft-flag pair**: two overlapping events → second response includes a `DOUBLE_BOOKING` flag pointing at the first.
+- [x] `EventControllerTest` — 4/4 slice tests green: admin 201; PARENT → 403 FORBIDDEN envelope; unauthenticated → 401; invalid body → 400 VALIDATION_ERROR.
+- [x] **OpenAPI drift caught and reset**: `OpenApiSnapshotIT` correctly failed on first verify, baseline regenerated via `OPENAPI_SNAPSHOT=update mvn test -Dtest=OpenApiSnapshotIT`. New baseline committed.
+- [x] CI green on PR #84 ([run 25519407177](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25519407177)).
+
+Notes / surprises:
+- **`saveAndFlush + em.refresh` was needed** to populate `created_at`/`updated_at` in the response. After `saveAndFlush`, Hibernate has the persisted entity but doesn't reload DB-managed columns. Without `em.refresh`, `EventView.createdAt` came back null and the happy-path test failed. Same pattern likely applies to every entity with `insertable=false, updatable=false` columns; all six Series-1 entities have `created_at`/`updated_at` of this shape.
+- **Idempotency surface change**: the `IdempotencyFilter` from Part 3.13 already includes `/api/v1/events` in its allowlist (set up before this part). Replays now actually hit a real endpoint; the existing IdempotencyFilterTest already covered this without needing changes.
+- **OpenAPI snapshot drift was detected on first verify run** — the `OpenApiSnapshotIT` flagged the new route + schemas. Worked exactly as designed. Worth noting the env-var path (`OPENAPI_SNAPSHOT=update`) is what works under Surefire, not `-Dopenapi.snapshot=update` — caught this in 4.5 too. Reusing the env-var path saves the future maintainer the same diagnostic.
+- **`TestJwtSigner` visibility** had to be lifted from package-private to public. The auth package tests used it within the same package; Series 5+ slice tests in other packages need it. Trade-off: slightly larger test surface API; in exchange, slice tests in any controller package can sign tokens without duplicating the signer logic.
+- **`NotificationService` stub** explicitly logs at DEBUG, not INFO — keeps the test output clean since this is a no-op path. Once 5.8 lands, the real impl can decide its log level based on actual delivery semantics.
+- **Series 1.7 lesson reused**: when calling `softFlagService.findActiveByEntity` immediately after `recomputeForEvent`, the result correctly includes any freshly-inserted flags because both happen in the same `@Transactional`. The IT verifies this with the overlap test — second event's response carries the DOUBLE_BOOKING flag inline.
+
+Next part: 5.2 — `POST /api/v1/events` for **CUSTOM type** with `attendeeUserIds[]` and `studentIds[]` writing to the `event_attendees` and `event_students` join tables.
+
+---
+
 ## Part 4.5 (Series 4) — Springdoc OpenAPI + CI snapshot drift check — STATUS: ✅ done · **CLOSES BACKEND SERIES 4**
 Date: 2026-05-07
 Operator: Mukul Phogat
