@@ -1,6 +1,11 @@
 # Default: let git auto-detect text vs binary
 * text=auto
 
+# Java sources must always be LF. Spotless on Linux CI flags CRLF as a format
+# violation; without this, files created on a Windows working tree fail the
+# spotless:check step. (Windows IDEs handle LF-only files fine.)
+*.java text eol=lf
+
 # Shell scripts must always be LF — required when these files are run inside
 # Linux containers (Dockerfile build stage). Without this, a Windows checkout
 # stores them with CRLF, and Alpine's /bin/sh fails to parse the shebang.
