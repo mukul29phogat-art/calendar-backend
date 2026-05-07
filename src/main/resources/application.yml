@@ -13,6 +13,15 @@ management:
 spring:
   application:
     name: calendar-backend
+  jpa:
+    # Flyway owns the schema; never let Hibernate generate or update it.
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: UTC
   flyway:
     enabled: true
     url: ${spring.datasource.calendar.url}
