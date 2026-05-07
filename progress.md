@@ -29,6 +29,36 @@ Next part: X.Y+1
 
 ---
 
+## Part 2.2 (Series 2) — UserPrincipal record + auth context plumbing — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `Role` enum (4 values), `UserPrincipal` record (with `Set.copyOf()` in compact constructor for immutability).
+- `PlatformUserDirectory.load(UUID)`: queries `platform.users` + `user_schools` + `classroom_staff` + `student_parents` (parents only) via `platformJdbcTemplate`. Throws `UnknownPrincipalException` → 401 if the JWT subject doesn't match a row.
+- `JwtToUserPrincipalConverter` (`@Component`): wired into `SecurityConfig.oauth2ResourceServer.jwt(jwtConverter)`. Authorities derive `ROLE_<role>` from the loaded principal.
+- `UserPrincipalAuthenticationToken`: final subclass of `AbstractAuthenticationToken`; transient `Jwt` + `UserPrincipal` fields satisfy serialization warnings.
+- `WhoAmIController` now takes `@AuthenticationPrincipal UserPrincipal` and returns the full record.
+- `PlatformUserDirectoryIT` (5 tests): per-role assertions against the seeded platform-DB users; verifies org-admin → both schools, staff → classroom_staff joins, parent → student_parents joins, unknown UUID → exception.
+- `WhoAmIControllerTest` updated: `@MockBean PlatformUserDirectory` stubs the lookup; assertion checks the full UserPrincipal JSON shape.
+
+Files changed (count: 9): 6 main classes (Role, UserPrincipal, PlatformUserDirectory, UnknownPrincipalException, JwtToUserPrincipalConverter, UserPrincipalAuthenticationToken), 2 modified (SecurityConfig, WhoAmIController), 2 test files (one updated, one new).
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS
+- [x] 37 classes analyzed, all gates met
+- [x] CI on PR #37 green
+
+Notes (two -Werror fixes worth pinning):
+1. `AbstractAuthenticationToken` implements `Serializable`; non-transient non-Serializable fields trip "non-transient instance field" warning. Marked `Jwt` + `UserPrincipal` `transient` (we never serialize the token; sessions are stateless).
+2. `setAuthenticated()` from the constructor triggered "possible 'this' escape" warning. Made the class `final` + `@SuppressWarnings("this-escape")` on the constructor — class-final keeps the suppression honest (no override possible).
+
+Caching deferred to Part 2.3 per playbook (Caffeine + 60s TTL lands together with `PlatformEntityValidator`).
+
+Next part: **Part 2.3 — `PlatformEntityValidator` + Caffeine cache**.
+
+---
+
 ## Part 2.1 (Series 2) — Spring Security + Supabase JWT validation — STATUS: ✅ done — **Series 2 begun**
 Date: 2026-05-07
 Operator: Mukul Phogat
