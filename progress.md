@@ -29,6 +29,43 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.7 (Series 3) — `RecurrenceService` WEEKLY expansion — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `RecurrenceService.expand()` now handles `RecurCycle.WEEKLY`. Stored `dueDayOfWeek` follows the FE prototype's JS `Date.getDay()` convention (`0=Sun..6=Sat`) and is mapped once to `java.time.DayOfWeek` (`1=Mon..7=Sun`): `js=0 → Java 7`, otherwise `js → Java js`.
+- Algorithm: from `winStart`, advance `(targetDow - cursorDow + 7) % 7` days to land on the first matching weekday; step `+7 days` through `winEnd`; cap at `MAX_OCCURRENCES` with `truncated=true` if reached.
+- Validation hardened with cycle-specific shape:
+  - Creation-time: `WEEKLY` rules require `dueDayOfWeek` in `0..6`.
+  - Expand-time: re-validates defensively for legacy rows that may have bypassed creation validation.
+
+Files changed (count: 2):
+- `src/main/java/com/childcarewow/calendar/recurrence/RecurrenceService.java` — `+expandWeekly()` helper, `+WEEKLY` arm of cycle switch, `+`cycle-shape validation in `validate()`.
+- `src/test/java/com/childcarewow/calendar/recurrence/RecurrenceServiceTest.java` — replaced the `weeklyAndMonthlyCyclesNotYetSupported` test with `monthlyCycleNotYetSupported` (WEEKLY now works); added 7 WEEKLY-specific tests.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m27s; bundle gate ≥80% line met.
+- [x] `RecurrenceServiceTest` — 27/27 tests green:
+  - **Tuesday rule (`js=2`)** over June 2026 → exactly five Tuesdays (2/9/16/23/30).
+  - **Sunday rule (`js=0`)** maps correctly to Java `DayOfWeek.SUNDAY` → four Sundays.
+  - **DST boundary** across America/* fall-back (2026-11-01) → five Sundays bracketing the transition; we work in `LocalDate`, so DST doesn't shift dates.
+  - WEEKLY without `dueDayOfWeek` → `InvalidRecurrenceException` at BOTH `create` AND `expand` (defense in depth).
+  - Out-of-range (`7`) rejected at create; (`-1`) rejected at expand (legacy/corrupt rule path).
+  - MONTHLY still throws `UnsupportedOperationException` (Part 3.8).
+- [x] Per-class JaCoCo: `RecurrenceService` 8/392 instr missed (~98%); the only uncovered arm is now MONTHLY.
+- [x] CI green on PR #56 ([run 25503581821](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25503581821)).
+
+Notes / surprises:
+- The DOW mapping `js=0 ? 7 : js` is the cleanest expression of "Sunday is 0 in JS but 7 in Java; otherwise the numbers line up". Avoids the more general `(js + 6) % 7 + 1` formula from the playbook because it's easier to reason about in tests.
+- `winStart.plusDays(delta)` lands on or after `winStart`. If the requested window starts on the matching weekday, `delta = 0` and we emit `winStart` itself — verified by the Tuesday test (June 2 is a Tuesday and is included).
+- The DST test was important: spec § 8 says "rules like 'is this a Tuesday' are evaluated in the school's timezone in `LocalDate` space, never with `Instant` arithmetic". Using `cursor.plusWeeks(1)` over `LocalDate` gives us that for free — we never construct a `ZonedDateTime` and never see a 23h or 25h day.
+- The expand-layer validation re-throws `InvalidRecurrenceException` for legacy bad rules. This trades a 400 over a 500 (which would happen if we passed `null` to `DayOfWeek.of` further down). It's a tiny redundancy with the create-layer check, but worth it for robustness against direct DB tampering.
+
+Next part: 3.8 — MONTHLY expansion with `dueDayOfMonth` and end-of-month snapping (Feb 29/30/31, 30-day months → snap to last day).
+
+---
+
 ## Part 3.6 (Series 3) — `RecurrenceService` skeleton + DAILY expansion + 1000-cap — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
