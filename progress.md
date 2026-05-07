@@ -29,6 +29,49 @@ Next part: X.Y+1
 
 ---
 
+## Part 4.3 (Series 4) — `GET /api/v1/classrooms?schoolId=` (with staffUserIds) — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `auth/ClassroomsController` — `GET /api/v1/classrooms?schoolId=`. Auth-only at the controller; the school-level access check is **deliberately absent** because revealing a school's existence to a parent who isn't linked to it would be an info leak. If the actor passes an inaccessible school, the result is empty.
+- `auth/ClassroomsReadService.findBySchool(schoolId)`:
+  - **Two-query approach**: SELECT classrooms WHERE `school_id = :schoolId AND deleted_at IS NULL ORDER BY name`, then SELECT classroom_staff WHERE `classroom_id IN (:ids)` if any classrooms came back. Combined in Java.
+  - Aggregate-with-`array_agg` would be one round-trip but parsing `java.sql.Array → UUID[]` adds JDBC ceremony for ≤ 10 classrooms per school. Documented trade-off in service Javadoc.
+  - Caffeine cache 1000-entry / 60s TTL keyed by `schoolId`.
+  - Empty-result short-circuit: if the first query returns nothing, the staff-map query is skipped.
+  - `staffUserIds` sorted by UUID for stable serialization.
+- `auth/ClassroomView(id, schoolId, name, List<UUID> staffUserIds)`.
+- Internal `ClassroomRow` record private to the service for the first-query row mapper.
+
+Files changed (count: 5, all new):
+- `src/main/java/com/childcarewow/calendar/auth/{ClassroomsController,ClassroomsReadService,ClassroomView}.java`
+- `src/test/java/com/childcarewow/calendar/auth/{ClassroomsReadServiceIT,ClassroomsControllerTest}.java`
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m33s; bundle gate ≥80% line met.
+- [x] `ClassroomsReadServiceIT` — 7/7 tests green against the seeded platform DB:
+  - All Sunrise classrooms returned alphabetically (Butterflies, Caterpillars).
+  - `staffUserIds` populated correctly: Butterflies → Maya, Caterpillars → Tom.
+  - **Classroom with no assigned staff returns empty array** (Stars in Maplewood) — verifies the LEFT JOIN behavior. Sunbeams confirms the populated case still works alongside.
+  - Unknown school → empty list.
+  - Null schoolId → empty list.
+  - **Soft-delete filter** verified end-to-end: insert a brand-new soft-deleted classroom in a brand-new school (no cache pollution) → excluded; cleanup in `finally`.
+  - Cache hit returns the same list instance.
+- [x] `ClassroomsControllerTest` — 2/2 slice tests green: authenticated returns the full list with all 4 fields populated; unauthenticated → 401.
+- [x] Per-class JaCoCo: `ClassroomsController` **100%** (0/11 instr); `ClassroomsReadService` **100%** (0/152 instr, 0/6 branch, 0/34 line, 0/7 method); `ClassroomView` and `ClassroomRow` **100%**.
+- [x] CI green on PR #78 ([run 25516216683](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25516216683)).
+
+Notes / surprises:
+- **First impl's reflection-on-record-component was a code smell.** The original `loadStaffMap` accepted `List<? extends Record>` and reflected on the local `Row` record's first component to extract the UUID id. Compiled and passed tests, but unreadable. Refactored to a private top-level `ClassroomRow` record visible to both query helpers — ten lines simpler, no reflection. Lesson: when a local record needs to escape its enclosing method's scope, lift it to the class.
+- **Soft-delete test design** (the playbook's common-failure-points stays). First attempt updated `deleted_at` on an existing seed row, but the cache had already retained the pre-delete result, so the test passed for the wrong reason. Final design: insert a NEW soft-deleted row in a NEW school (cache miss guaranteed), assert empty result, clean up. The pattern transfers to other "filter-by-deleted_at" tests in this series.
+- **Controller has no policy gate.** Every authenticated user has a legitimate reason to query classrooms for a school they're already in (parents to know where their kid is, staff for assignments). Adding a `users.read`-style gate would force PARENT → 403, but parents who legitimately need their child's classroom in the picker would then need an exception path. Cheaper: empty result for inaccessible schools.
+- **`@Qualifier("platformJdbcTemplate")` autowire** in the IT (positional, for the cleanup SQL) vs `@Qualifier("platformNamedJdbcTemplate")` in the service. Both wrap the same DataSource, so the test can mutate state via the positional template while the service reads via the named one. No transaction boundaries crossed (each `update` is auto-committed).
+
+Next part: 4.4 — `GET /api/v1/students?classroomId=` (or `schoolId=`) with COPPA-required `@AuditRead("STUDENT_VIEW")` audit on every read.
+
+---
+
 ## Part 4.2 (Series 4) — `GET /api/v1/schools` (school switcher) — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
