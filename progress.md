@@ -29,6 +29,54 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.9 (Series 3) — Per-occurrence overrides + skipped filter — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- New CRUD on `RecurrenceService` for `task_instance_overrides`:
+  - `upsertOverride(TaskInstanceOverride)` — find-by-`(taskId, occurrenceDate)`; on hit, mutate the existing row in place and `save()`; on miss, persist a new row. Idempotent on the unique key. Rejects null `taskId`/`occurrenceDate`.
+  - `getOverride(taskId, occurrenceDate)` → `Optional<TaskInstanceOverride>`.
+  - `removeOverridesForTask(taskId)` — drops everything for a task (used when the parent task is deleted).
+  - `removeOverridesFromDate(taskId, fromDate)` — drops on/after `fromDate` (backs the "this and following" task-edit flow).
+- `RecurrenceService.expand()` now applies the **skipped filter** AFTER the cycle generates dates (per playbook common-failure-points: skipping before the rule produces the date is wrong because the date wouldn't be in the result anyway). Title / dueTime / status overrides do NOT apply to expand's date list.
+- New `RecurrenceService.projectFor(task, occurrenceDate)` → `OccurrenceSnapshot`. Returns `null` for skipped dates; otherwise overlays the override's `title` / `dueTime` / `status` on top of the task's defaults, **field by field** (each falls through independently when unset on the override).
+- New `OccurrenceSnapshot` record `(date, title, dueTime, status)`.
+- `TaskInstanceOverrideRepository` gained four Spring Data derived methods: `findByTaskIdAndOccurrenceDate`, `findByTaskId`, `deleteByTaskId`, `deleteByTaskIdAndOccurrenceDateGreaterThanEqual`. The two `deleteBy...` carry `@Modifying` + `@Transactional`.
+
+Files changed (count: 4):
+- `src/main/java/com/childcarewow/calendar/recurrence/RecurrenceService.java` — new CRUD, skipped filter integration, `projectFor`.
+- `src/main/java/com/childcarewow/calendar/recurrence/OccurrenceSnapshot.java` — new record.
+- `src/main/java/com/childcarewow/calendar/task/TaskInstanceOverrideRepository.java` — derived query methods.
+- `src/test/java/com/childcarewow/calendar/recurrence/RecurrenceServiceTest.java` — +13 tests.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m18s; bundle gate ≥80% line met.
+- [x] `RecurrenceServiceTest` — 49/49 tests green:
+  - **Skipped occurrence filtered** from expand output (DAILY 5-day rule with one skip → 4 dates).
+  - Non-skipped overrides do NOT affect expand's date list.
+  - `upsertOverride` creates new on miss; idempotent on hit (second call mutates the existing row in place; second invocation's title/skipped supersede the first).
+  - `upsertOverride` rejects missing `taskId`/`occurrenceDate`.
+  - `getOverride` pass-through.
+  - `removeOverridesForTask` + `removeOverridesFromDate` delegate to repo; `fromDate=null` rejected.
+  - `projectFor` falls through to task defaults when no override.
+  - `projectFor` applies all three fields when override sets them.
+  - `projectFor` returns `null` for skipped dates.
+  - `projectFor` with partial override keeps task defaults for unset fields (the field-by-field fall-through).
+- [x] Per-class JaCoCo: `RecurrenceService` 15/684 instr missed (~98%); 0/20 methods (100%); ~87% branch. The 5/153 line miss + 14/105 branch miss are mostly defensive-cap and "rule deleted" paths plus one or two of the override-edge branches that the existing tests already happen to cover via Mockito-defaults.
+- [x] CI green on PR #60 ([run 25505160107](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25505160107)).
+
+Notes / surprises:
+- The `expand()` short-circuits the override fetch when `task.getId() == null` (transient task, only happens in tests). In production tasks always have an ID by the time they're expanded. This guard simplifies tests that don't bother setting an ID and don't have skipped dates.
+- The skipped-set is only fetched once per `expand()` call (single SELECT), then a `Set<LocalDate>` is built and the date list is filtered in memory. Cheap when the task has no overrides — empty set, the `.filter()` is skipped via the `!skipped.isEmpty()` guard.
+- `upsertOverride` is implemented at the service layer (find then save) rather than via Postgres `INSERT ... ON CONFLICT` because we don't have a custom `@Query` framework wired up yet. The unique constraint on `(task_id, occurrence_date)` (V3 migration) prevents true concurrent races; under contention the loser's `save()` would 23505 (duplicate key) and bubble up as a 500 — acceptable for v1 since override writes are user-initiated and rare.
+- Three places in the test file use `org.mockito.Mockito.verify(...)` fully qualified rather than imported, because we already import `Mockito.mock`/`when`/`eq`/`any` and a static `verify` import would have collided with assertJ's `assertThat` style in some readers' tooling. Cosmetic — could be cleaned up later.
+- Series 3 coverage rule check (playbook step 4) — `RecurrenceService` ≥ 95%: ~98% line. ✅
+
+Next part: 3.10 — `SoftFlagService` skeleton + dismiss (CRUD on `conflict_flags`: insert / list-active / dismiss; recompute triggers in 3.11/3.12).
+
+---
+
 ## Part 3.8 (Series 3) — `RecurrenceService` MONTHLY + end-of-month snapping — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
