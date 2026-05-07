@@ -20,19 +20,19 @@ import org.springframework.util.StreamUtils;
  * Signs RS256 JWTs with the test-only RSA private key in src/test/resources. Used by the auth slice
  * tests; never wired into the running app.
  */
-final class TestJwtSigner {
+public final class TestJwtSigner {
 
   private final PrivateKey privateKey;
 
-  TestJwtSigner() {
+  public TestJwtSigner() {
     this.privateKey = loadPrivateKey();
   }
 
-  String sign(String subject) {
+  public String sign(String subject) {
     return sign(subject, Instant.now().plusSeconds(60));
   }
 
-  String sign(String subject, Instant expiry) {
+  public String sign(String subject, Instant expiry) {
     try {
       JWTClaimsSet claims =
           new JWTClaimsSet.Builder()
