@@ -29,6 +29,38 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.3 (Series 3) — `@Audited` annotation + AOP aspect + AuditService — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `audit/Audited` annotation: `action`, `targetType` (default `""`), `idFrom` (default `"id"`). Method-level. Javadoc spells out the self-invocation caveat — annotate at the controller layer only because Spring AOP proxies don't intercept self-calls.
+- `audit/AuditService.log(actorId, action, targetType, targetId, ip, userAgent, metadata)`. Wrapped in `@Transactional(propagation = REQUIRES_NEW)` so audit failures cannot roll back the user-facing transaction (and a rolled-back business txn still leaves the audit row committed). Null metadata defaults to `Map.of()`.
+- `audit/AuditAspect`: single `@AfterReturning` advice, pointcut `@annotation(audited)`. Resolves actor from `SecurityContextHolder` (cast to `UserPrincipal`); ip/user-agent from `RequestContextHolder` → `ServletRequestAttributes`; `target_id` via SpEL on the returned object using `audited.idFrom()`. Every resolution path is null-safe; the entire body is wrapped in try/catch and a failure logs at WARN without propagating, so a broken audit write never poisons the user response.
+- `pom.xml`: `spring-boot-starter-aop`.
+
+Files changed (count: 6, all new except pom):
+- `pom.xml` — `+spring-boot-starter-aop`.
+- `src/main/java/com/childcarewow/calendar/audit/{Audited,AuditService,AuditAspect}.java`
+- `src/test/java/com/childcarewow/calendar/audit/{AuditAspectIT,AuditServiceIT}.java`
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m26s; bundle gate (≥80% line) met.
+- [x] AuditAspectIT — 5/5 tests green: success row · exception writes nothing · nested `idFrom="event.id"` · anonymous principal → null actor · unresolvable SpEL → null target_id but row still written.
+- [x] AuditServiceIT — 2/2 tests green: full calendar-db round-trip exercising jsonb metadata + inet ip_address + db-managed `created_at`; null metadata defaults to `{}`.
+- [x] Per-class JaCoCo: `AuditService` 100% (0 missed across 41 instr / 2 branch / 13 line / 2 method); `AuditAspect` ~72% line (uncovered paths are the aspect's own internal try/catch + the `String → UUID.fromString` fallback in `resolveTargetId`).
+- [x] CI green on PR #48 ([run 25500480676](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25500480676)).
+
+Notes / surprises:
+- The `AuditAspectIT` test bean's `success()` method initially returned a bare `UUID`. With `idFrom="id"` (default) the SpEL expression `id` doesn't resolve on a `UUID` — it tries to read a property named `id` on the UUID object and gets nothing → `target_id = null`. Fix: wrap test responses in DTOs (matches real controller usage). Lesson stays for real controllers: return DTOs with an `id` field, or override `idFrom` per endpoint.
+- Spring AOP test-config quirk: nested `@TestConfiguration` static class registering the test bean works, BUT also marking the test bean with `@Component` makes it Spring-discoverable — using both belt-and-suspenders is fine; the explicit `@Bean` definition wins.
+- `UserPrincipalAuthenticationToken` in this repo takes `(Jwt, UserPrincipal, Collection<authority>)` — too many args for a synthetic test auth. Used `UsernamePasswordAuthenticationToken(actor, null, List.of())` instead; the aspect only reads `auth.getPrincipal()` so the concrete token type doesn't matter.
+- The aspect's SpEL `idFrom` resolver also accepts a `String` UUID and round-trips via `UUID.fromString`. That branch isn't covered by current tests but exists for future controllers that return DTOs with stringified UUIDs (rare; happy to drop later if unused).
+
+Next part: 3.4 — `AuditService` for non-HTTP code + Hibernate `@Immutable` on `AuditEvent` + CI grep guard.
+
+---
+
 ## Part 3.2 (Series 3) — PolicyService — full 19-action catalog + Event/Task overloads — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
