@@ -29,6 +29,38 @@ Next part: X.Y+1
 
 ---
 
+## Part 0.6 (Series 0) — GitHub Actions CI workflow — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `.github/workflows/ci.yml`: every push to `main` and every PR runs `mvn verify` against Postgres service containers in the runner.
+- Service containers: `calendar-db` (postgres:15-alpine, host port 5434 to match `application.yml` — see Part 0.2 deviation note) and `platform-db` (host port 5433); both with health checks (10 retries to be more forgiving than the playbook's 5).
+- Steps: checkout → setup-java 21 (Temurin) with maven cache → seed platform-db from `docker/platform-seed.sql` via the runner's `psql` → spotless:check → verify (compile + Surefire + Failsafe + JaCoCo 80% gate) → flyway:info dry-run → upload JaCoCo HTML as workflow artifact → on PRs, post coverage comment via `madrapps/jacoco-report@v1.7.1` (min-coverage-overall=80, min-coverage-changed-files=80).
+- `permissions:` block: `contents:read` + `pull-requests:write` so the JaCoCo action can post the coverage comment.
+- **Branch protection updated:** `required_status_checks.contexts: ["build"]` with `strict: true`. Future PRs cannot merge unless the `build` job is green and the branch is up-to-date with `main`.
+
+Files changed (count: 1, +1 new):
+- `.github/workflows/ci.yml` (new)
+
+Validation:
+- [x] PR #15 ran CI on first push: BUILD SUCCESS in 1m1s, all 13 steps green
+- [x] After merge, `main` CI run also green
+- [x] `gh api repos/.../branches/main/protection` returns `required_status_checks.contexts: ["build"]`, `strict: true`
+- [x] PR coverage comment posted by `madrapps/jacoco-report` (verified on PR #15)
+- [x] JaCoCo HTML report available as workflow artifact (`jacoco-report`)
+- [x] Workflow permissions = "Read and write" set in P0.4 step 5; combined with the workflow-level `permissions:` block, the action could post the coverage comment
+
+Notes / surprises:
+- **`gh auth refresh -h github.com -s workflow` was a hard prerequisite** (the earlier OAuth token didn't include the `workflow` scope). Operator completed the device-code refresh before this Part could start. Token now scoped: `gist`, `read:org`, `repo`, `workflow`.
+- One non-blocking workflow annotation: Node.js 20 actions are deprecated (forced to Node 24 by 2026-06-02; removed by 2026-09-16). `actions/checkout@v4`, `actions/setup-java@v4`, `actions/upload-artifact@v4`, and `madrapps/jacoco-report@v1.7.1` will all need version bumps before the cutover. Tracked as a follow-up; not blocking today's green build.
+- The `madrapps/jacoco-report` action is a third-party action; review its source before any sensitive workflow context is added.
+- **Testcontainers is now feasible on this CI runner.** The Windows-pipe block from Part 0.4 doesn't apply on Ubuntu. Re-enabling is deferred to a follow-up: uncomment the Testcontainers deps in `pom.xml` (currently in an XML comment block), gate any Testcontainers-using IT with `@DisabledOnOs(OS.WINDOWS)` (or behind a Maven profile) so local Windows dev still runs `mvn verify` cleanly, and add the originally-spec'd fresh-container Flyway test. Tracked in memory `backend_part_0_4_testcontainers_windows.md`.
+
+Next part: **Part 0.7 (Series 0) — Dockerfile + multi-stage build.** Adds a production-grade `Dockerfile` that builds a slim runtime image, runs as non-root, exposes 8080, has a HEALTHCHECK. Once that's in, Series 0 is complete and we move to Series 1 (the actual calendar domain).
+
+---
+
 ## Part 0.5 (Series 0) — Code quality tooling: Spotless + JaCoCo + Failsafe — STATUS: ✅ done
 Date: 2026-05-06
 Operator: Mukul Phogat
