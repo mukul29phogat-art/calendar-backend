@@ -29,6 +29,35 @@ Next part: X.Y+1
 
 ---
 
+## Part 1.6 (Series 1) — V7 notifications + recipients + reads + deliveries — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `V7__notifications.sql`: 4 tables, 3 enums (TEXT+CHECK).
+  - `notifications` (8-value `kind` enum matching prototype exactly, JSONB `payload`, `paused` gate).
+  - `notification_recipients` + `notification_reads` (composite PK, ON DELETE CASCADE from notifications).
+  - `notification_deliveries` (channel + status enums, attempt tracking).
+- **Deviation from architecture spec §5.7:** delivery channel includes PUSH per locked D4 (Firebase FCM in Series 11). Spec was APP+EMAIL only.
+- 3 enums + 4 entities (2 with `@IdClass` composite keys) + 4 repos in `com.childcarewow.calendar.notification`.
+- `NotificationRepositoryIT` (3 tests): exhaustive round-trip across notification + recipient + delivery; cascade delete from notification → recipients; PK-uniqueness violation on `notification_reads`.
+
+Files changed (count: 15, all new).
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS (after 2 fixes — see notes)
+- [x] 27 classes analyzed, all gates met
+- [x] 24 tests run, 2 skipped (FlywayMigrationIT @EnabledOnOs Linux/Mac)
+- [x] CI on PR #31: green
+
+Notes / surprises (two real lessons):
+1. **`-Werror` catches missing `serialVersionUID`** on classes implementing `Serializable`. Added `private static final long serialVersionUID = 1L;` to both `@IdClass` key classes. Future @IdClass/@Embeddable Serializable classes need the same.
+2. **`JpaRepository.save()` with `@IdClass` merges (upsert), not inserts.** The PK-violation test had to use `em.persist() + em.flush()` to force INSERT and trigger the constraint. Pattern for future composite-PK uniqueness tests.
+
+Next part: **Part 1.7 (Series 1) — V8 idempotency_keys + audit_events**.
+
+---
+
 ## Part 1.5 (Series 1) — V6 conflict_flags (bidirectional) — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
