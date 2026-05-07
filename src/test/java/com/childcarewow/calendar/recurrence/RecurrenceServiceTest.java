@@ -117,16 +117,148 @@ class RecurrenceServiceTest {
     assertThat(result.occurrences().get(0)).isEqualTo(dueDate);
   }
 
+  // -- MONTHLY expansion ------------------------------------------------------
+
+  /** Monthly 15th rule across Jan, Feb, Mar 2026 → exactly the 15th of each. */
   @Test
-  void monthlyCycleNotYetSupported() {
-    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+  void monthlyMidMonthRuleEmitsThreeOccurrences() {
+    LocalDate dueDate = LocalDate.of(2026, 1, 15);
+    LocalDate untilDate = LocalDate.of(2026, 3, 31);
     Task task = task(dueDate, UUID.randomUUID());
-    RecurrenceRule monthly = rule(RecurCycle.MONTHLY, dueDate.plusMonths(3));
+    RecurrenceRule monthly = rule(RecurCycle.MONTHLY, untilDate);
     monthly.setDueDayOfMonth((short) 15);
     when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(monthly));
+
+    ExpansionResult result = service.expand(task, dueDate, untilDate);
+    assertThat(result.occurrences())
+        .containsExactly(
+            LocalDate.of(2026, 1, 15), LocalDate.of(2026, 2, 15), LocalDate.of(2026, 3, 15));
+    assertThat(result.truncated()).isFalse();
+  }
+
+  /** "The 31st" in non-leap February → Feb 28. */
+  @Test
+  void monthlyThirtyFirstSnapsToFebruary28InNonLeapYear() {
+    LocalDate dueDate = LocalDate.of(2026, 1, 31);
+    LocalDate untilDate = LocalDate.of(2026, 3, 31);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule monthly = rule(RecurCycle.MONTHLY, untilDate);
+    monthly.setDueDayOfMonth((short) 31);
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(monthly));
+
+    ExpansionResult result = service.expand(task, dueDate, untilDate);
+    assertThat(result.occurrences())
+        .containsExactly(
+            LocalDate.of(2026, 1, 31), LocalDate.of(2026, 2, 28), LocalDate.of(2026, 3, 31));
+  }
+
+  /** "The 31st" in April (30 days) → April 30. */
+  @Test
+  void monthlyThirtyFirstSnapsTo30thInThirtyDayMonth() {
+    LocalDate dueDate = LocalDate.of(2026, 4, 30);
+    LocalDate untilDate = LocalDate.of(2026, 5, 31);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule monthly = rule(RecurCycle.MONTHLY, untilDate);
+    monthly.setDueDayOfMonth((short) 31);
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(monthly));
+
+    ExpansionResult result = service.expand(task, dueDate, untilDate);
+    assertThat(result.occurrences())
+        .containsExactly(LocalDate.of(2026, 4, 30), LocalDate.of(2026, 5, 31));
+  }
+
+  /** "The 29th" in non-leap February → Feb 28. */
+  @Test
+  void monthlyTwentyNinthSnapsToFebruary28InNonLeapYear() {
+    LocalDate dueDate = LocalDate.of(2026, 1, 29);
+    LocalDate untilDate = LocalDate.of(2026, 2, 28);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule monthly = rule(RecurCycle.MONTHLY, untilDate);
+    monthly.setDueDayOfMonth((short) 29);
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(monthly));
+
+    ExpansionResult result = service.expand(task, dueDate, untilDate);
+    assertThat(result.occurrences())
+        .containsExactly(LocalDate.of(2026, 1, 29), LocalDate.of(2026, 2, 28));
+  }
+
+  /** "The 29th" in leap February (2028) → Feb 29 (no snap). */
+  @Test
+  void monthlyTwentyNinthLandsOnFebruary29InLeapYear() {
+    LocalDate dueDate = LocalDate.of(2028, 1, 29);
+    LocalDate untilDate = LocalDate.of(2028, 2, 29);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule monthly = rule(RecurCycle.MONTHLY, untilDate);
+    monthly.setDueDayOfMonth((short) 29);
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(monthly));
+
+    ExpansionResult result = service.expand(task, dueDate, untilDate);
+    assertThat(result.occurrences())
+        .containsExactly(LocalDate.of(2028, 1, 29), LocalDate.of(2028, 2, 29));
+  }
+
+  /**
+   * Window that starts after the snapped day-of-month for the month it spans → first occurrence
+   * skipped, next month's emitted.
+   */
+  @Test
+  void monthlyWindowAfterDueDayInFirstMonthSkipsToNext() {
+    LocalDate dueDate = LocalDate.of(2026, 1, 15);
+    LocalDate untilDate = LocalDate.of(2026, 4, 30);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule monthly = rule(RecurCycle.MONTHLY, untilDate);
+    monthly.setDueDayOfMonth((short) 15);
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(monthly));
+
+    // Window starts Jan 20 (after the 15th of January) → first emission is Feb 15.
+    ExpansionResult result =
+        service.expand(task, LocalDate.of(2026, 1, 20), LocalDate.of(2026, 3, 31));
+    assertThat(result.occurrences())
+        .containsExactly(LocalDate.of(2026, 2, 15), LocalDate.of(2026, 3, 15));
+  }
+
+  @Test
+  void monthlyExpandRejectsMissingDueDayOfMonth() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule m = rule(RecurCycle.MONTHLY, dueDate.plusMonths(3));
+    // dueDayOfMonth deliberately unset
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(m));
     assertThatThrownBy(() -> service.expand(task, dueDate, dueDate.plusMonths(1)))
-        .isInstanceOf(UnsupportedOperationException.class)
-        .hasMessageContaining("MONTHLY");
+        .isInstanceOf(InvalidRecurrenceException.class)
+        .hasMessageContaining("dueDayOfMonth");
+  }
+
+  @Test
+  void monthlyExpandRejectsOutOfRangeDueDayOfMonth() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule m = rule(RecurCycle.MONTHLY, dueDate.plusMonths(3));
+    m.setDueDayOfMonth((short) 32); // legacy/corrupt rule
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(m));
+    assertThatThrownBy(() -> service.expand(task, dueDate, dueDate.plusMonths(1)))
+        .isInstanceOf(InvalidRecurrenceException.class)
+        .hasMessageContaining("1..31");
+  }
+
+  @Test
+  void monthlyCreateRequiresDueDayOfMonth() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+    RecurrenceRule m = rule(RecurCycle.MONTHLY, dueDate.plusMonths(3));
+    // dueDayOfMonth deliberately unset
+    assertThatThrownBy(() -> service.create(m, dueDate))
+        .isInstanceOf(InvalidRecurrenceException.class)
+        .hasMessageContaining("dueDayOfMonth");
+  }
+
+  @Test
+  void monthlyCreateRejectsOutOfRangeDueDayOfMonth() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+    RecurrenceRule m = rule(RecurCycle.MONTHLY, dueDate.plusMonths(3));
+    m.setDueDayOfMonth((short) 0);
+    assertThatThrownBy(() -> service.create(m, dueDate))
+        .isInstanceOf(InvalidRecurrenceException.class)
+        .hasMessageContaining("1..31");
   }
 
   // -- WEEKLY expansion -------------------------------------------------------
