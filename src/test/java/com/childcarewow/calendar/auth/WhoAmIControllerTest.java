@@ -1,20 +1,26 @@
 package com.childcarewow.calendar.auth;
 
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.when;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.options;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.header;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
+import java.util.Set;
+import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
+import org.springframework.boot.test.mock.mockito.MockBean;
 import org.springframework.context.annotation.Import;
 import org.springframework.test.web.servlet.MockMvc;
 
 @WebMvcTest(WhoAmIController.class)
-@Import(SecurityConfig.class)
+@Import({SecurityConfig.class, JwtToUserPrincipalConverter.class})
 class WhoAmIControllerTest {
 
   private static TestJwtSigner signer;
@@ -25,6 +31,24 @@ class WhoAmIControllerTest {
   }
 
   @Autowired MockMvc mvc;
+  @MockBean PlatformUserDirectory directory;
+
+  private static final UUID STUB_ID = UUID.fromString("33333333-0000-0000-0000-000000000001");
+
+  @BeforeEach
+  void stubDirectory() {
+    when(directory.load(any(UUID.class)))
+        .thenReturn(
+            new UserPrincipal(
+                STUB_ID,
+                "olivia@ccw-demo.test",
+                Role.ORG_ADMIN,
+                UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                Set.of(UUID.fromString("22222222-2222-2222-2222-222222222221")),
+                Set.of(),
+                Set.of(),
+                "Owner"));
+  }
 
   @Test
   void noAuthorizationHeaderReturns401() throws Exception {
@@ -33,7 +57,6 @@ class WhoAmIControllerTest {
 
   @Test
   void bearerWithBadSignatureReturns401() throws Exception {
-    // Valid JWT structure but signature is junk → fails verification
     String tamperedToken =
         "eyJhbGciOiJSUzI1NiJ9."
             + "eyJzdWIiOiJ1c2VyLTEyMyIsImlzcyI6Imh0dHBzOi8vdGVzdC5zdXBhYmFzZS5sb2NhbC9hdXRoL3YxIn0."
@@ -46,11 +69,17 @@ class WhoAmIControllerTest {
   }
 
   @Test
-  void validSignedTokenReturns200WithSubject() throws Exception {
-    String token = signer.sign("user-uuid-123");
+  void validSignedTokenReturnsUserPrincipal() throws Exception {
+    String token = signer.sign(STUB_ID.toString());
     mvc.perform(get("/api/v1/whoami").header("Authorization", "Bearer " + token))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.subject").value("user-uuid-123"));
+        .andExpect(jsonPath("$.id").value(STUB_ID.toString()))
+        .andExpect(jsonPath("$.email").value("olivia@ccw-demo.test"))
+        .andExpect(jsonPath("$.role").value("ORG_ADMIN"))
+        .andExpect(jsonPath("$.designation").value("Owner"))
+        .andExpect(jsonPath("$.schoolIds").isArray())
+        .andExpect(jsonPath("$.classroomIds").isArray())
+        .andExpect(jsonPath("$.childStudentIds").isArray());
   }
 
   @Test
