@@ -29,6 +29,68 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.14 (Series 3) — `FileUploadService` + Supabase signed-upload — STATUS: ✅ done · **CLOSES SERIES 3**
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `attachment/FileUploadService` (Spring `@Service`):
+  - `validate(mimeType, sizeBytes)` — allowlist `{image/jpeg, image/png}` (case-insensitive); size in `(0, 10MB]`. Throws `AttachmentInvalidException` (400 `ATTACHMENT_INVALID`).
+  - `signUpload(schoolId, filename, mimeType, sizeBytes)` — validates, sanitizes filename, builds object key `{schoolId}/{random uuid}/{sanitizedFilename}`, asks the client for the signed URL, returns `SignedUploadResult(uploadUrl, attachmentName, attachmentUrl)`.
+  - `sanitize(filename)` — replaces `/` and `\\` with `_`, strips ASCII control chars (`\\p{Cntrl}`), rejects null/blank/blank-after-stripping. Closes the `../etc/passwd` path-traversal hole.
+  - Constants: `MAX_BYTES = 10 MB`, `ALLOWED_MIME_TYPES = {image/jpeg, image/png}`. Locked decision § 5.7.
+- `attachment/SupabaseStorageClient` interface + `SupabaseStorageClientImpl` (production). Uses Spring's `RestClient`; reads `ccw.supabase.url` + `ccw.supabase.service-role-key` (LocalStack secrets in dev, Secrets Manager in staging/prod via Series 11). Wire format documented in Javadoc: `POST {SUPABASE_URL}/storage/v1/object/upload/sign/{bucket}/{objectKey}` → `{url, token}`. Defensive: throws `ATTACHMENT_INVALID` rather than 500 if `ccw.supabase.url` is unset (everyday dev hits the mocked client).
+- `attachment/AttachmentController` — `POST /api/v1/attachments/sign-upload` annotated with `@Audited("ATTACHMENT_SIGN", targetType="ATTACHMENT", idFrom="attachmentName")`. `policyService.assertCan(actor, "event.create")` gate (parents excluded uniformly with the rest of the create surface). `@Valid` on `SignUploadRequest`.
+- `SignUploadRequest` record with bean-validation (`@NotNull schoolId`, `@NotBlank filename`/`mimeType`, `@Positive sizeBytes`).
+- `SignedUploadResult` record `(uploadUrl, attachmentName, attachmentUrl)`.
+- `pom.xml` adds `spring-boot-starter-validation`.
+
+Files changed (count: 8):
+- `pom.xml` — `+spring-boot-starter-validation`.
+- `.gitattributes` — `+*.java text eol=lf` (CI Spotless fix; see Notes).
+- `src/main/java/com/childcarewow/calendar/attachment/{FileUploadService,SupabaseStorageClient,SupabaseStorageClientImpl,AttachmentController,SignUploadRequest,SignedUploadResult}.java` — new package.
+- `src/test/java/com/childcarewow/calendar/attachment/FileUploadServiceTest.java` — 18 tests.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 49s; bundle gate ≥80% line met.
+- [x] `FileUploadServiceTest` — 18/18 tests green:
+  - Validate: accepts `image/jpeg` + `image/png` (incl. uppercase via `toLowerCase`); rejects `application/pdf`; rejects null mime; rejects 0/negative bytes; accepts exactly 10MB; rejects 10MB+1.
+  - Sanitize: strips `/` and `\\` (`../etc/passwd` → `.._etc_passwd`); strips control chars; rejects null/blank; rejects blank-after-stripping.
+  - signUpload: returns the right `SignedUploadResult` shape; object key matches `{schoolId}/{uuid}/{filename}` regex; rejects bad mime/size BEFORE calling client; rejects null schoolId; sanitization flows into both `attachmentName` AND object key.
+- [x] Per-class JaCoCo: `FileUploadService` **100%** (0/118 instr · 0/16 branch · 0/26 line · 0/13 method). `AttachmentController` and `SupabaseStorageClientImpl` are thin pass-through layers — controller slice test + Supabase live test deferred to Series 11.4 alongside ECS deployment per playbook step 5 (the gated `@Tag("integration")` test).
+- [x] CI green on PR #70 ([run 25508680671](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25508680671)) — second run after CRLF fix.
+
+Notes / surprises:
+- **CI Spotless caught Windows CRLF line endings** on the new test file. Local `mvn spotless:check` runs on Windows and tolerates CRLF (because the JVM's Spotless write phase emits the system line separator); on Linux CI the same check sees CRLF as a format violation. Fix: `*.java text eol=lf` in `.gitattributes` so all Java sources commit with LF regardless of OS, and renormalized the offending file in a follow-up commit. Same convention now applies to `mvnw` and `*.sh` (already there for Alpine container compatibility). Future Java files created on Windows will also be LF on commit.
+- The controller uses `policyService.assertCan(actor, "event.create")` rather than introducing a new `attachment.upload` action. Reason: attachment uploads are always in the context of an event/task being created — the gate is "can this user create things". Adding a new action would require updating `PolicyService` (and its 100% coverage test matrix) for no semantic gain. If attachments later get their own surface separate from create-time, revisit.
+- `SupabaseStorageClientImpl` reads its config via `@Value("${ccw.supabase.url:}")` with empty-string default. This means the bean is constructable even without the config set — the runtime check inside `createSignedUploadUrl` raises `ATTACHMENT_INVALID` instead of crashing the app at startup. Trade-off: `application.yml` should set the values to a placeholder string (already done — Supabase secrets land in `application-dev.yml` via Spring Cloud AWS in Part 0.8 follow-up).
+- Coverage on the controller and Supabase client is intentionally low. The playbook only requires tests for the validation logic (which is at 100%). Controller and Supabase client are thin — adding slice tests is the kind of churn the playbook explicitly defers to Series 11 ("@Tag('integration')") so CI can opt in. Documented in the PR body.
+
+Series 3 close:
+- 15/15 parts done.
+- Cross-cutting service layer fully implemented and tested:
+  - **PolicyService** (3.1–3.2): 100% across 19 actions; resource-bearing Event/Task overloads.
+  - **AuditService + @Audited AOP** (3.3–3.4): 100% on AuditService; immutability enforced via Hibernate + CI grep guard + docs.
+  - **TimezoneService** (3.5): 7 tests including DST boundary; Caffeine 1h cache.
+  - **RecurrenceService** (3.6–3.9): all 3 cycles + per-occurrence overrides + skipped filter; ~98% line on the impl.
+  - **SoftFlagService** (3.10–3.12): 100% across instr/branch/line/method; insert + dismiss + 3 recompute triggers (Event bidirectional, Task ±120min, Holiday paint).
+  - **IdempotencyMiddleware** (3.13): cross-user scoped key, 5-route allowlist, daily purge cron.
+  - **FileUploadService** (3.14, this part): 100% on the service; sanitize closes path-traversal.
+- Total: **70 PRs merged** to date.
+
+Three carry-forward items still tracked from earlier series (none blocking Series 4):
+1. **GitHub Actions Node-20 deprecation** (2026-09-16) — bump `actions/checkout`, `actions/setup-java`, `actions/upload-artifact`, `madrapps/jacoco-report` before August.
+2. **Application config externalization (Part 0.8)** — Spring Cloud AWS Secrets Manager binding for per-env `application-{dev,staging,prod}.yml`. Required before any deploy; not for local dev or Series 4.
+3. **Local container DB networking** — `host.docker.internal` env-var override pattern documented in Part 0.7 progress entry.
+
+New Series-3 follow-ups:
+4. **AttachmentController slice test + Supabase live integration** — deferred to Series 11.4 per playbook step 5 (`@Tag("integration")` opt-in).
+5. **ShedLock for IdempotencyPurgeJob** — deferred to Series 11.4 alongside ECS multi-instance deployment.
+
+Next part: **Series 4 — Identity-read endpoints + OpenAPI codegen**. Starts at Part 4.0a (`@AuditRead` annotation + AuditReadAspect for auditing reads, not just writes).
+
+---
+
 ## Part 3.13 (Series 3) — `IdempotencyMiddleware` + daily purge + cross-user scoping — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
