@@ -11,6 +11,12 @@ import com.childcarewow.calendar.event.EventRepository;
 import com.childcarewow.calendar.exception.ForbiddenException;
 import com.childcarewow.calendar.exception.NotFoundException;
 import com.childcarewow.calendar.exception.ValidationException;
+import com.childcarewow.calendar.holiday.Holiday;
+import com.childcarewow.calendar.task.Task;
+import com.childcarewow.calendar.task.TaskRepository;
+import com.childcarewow.calendar.task.TaskStatus;
+import java.time.Duration;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -30,12 +36,18 @@ import org.springframework.transaction.annotation.Transactional;
 @Service
 public class SoftFlagService {
 
+  /** Window for considering two tasks "overlapping" by due time. */
+  static final long TASK_OVERLAP_MINUTES = 120L;
+
   private final ConflictFlagRepository repo;
   private final EventRepository eventRepo;
+  private final TaskRepository taskRepo;
 
-  public SoftFlagService(ConflictFlagRepository repo, EventRepository eventRepo) {
+  public SoftFlagService(
+      ConflictFlagRepository repo, EventRepository eventRepo, TaskRepository taskRepo) {
     this.repo = repo;
     this.eventRepo = eventRepo;
+    this.taskRepo = taskRepo;
   }
 
   /**
@@ -169,5 +181,124 @@ public class SoftFlagService {
     flag.setConflictingEntityId(other.getId());
     flag.setMessage("Overlaps with: " + other.getTitle());
     repo.save(flag);
+  }
+
+  // -- task recompute --------------------------------------------------------
+
+  /**
+   * Same-day same-assignee task overlap (architecture spec § 7.3). Bidirectional A&harr;B pair
+   * inserted in one transaction. Conflict rule: same {@code school_id} + same {@code
+   * assignee_user_id} + same {@code due_date} + neither task is {@link TaskStatus#DONE} + dueTime
+   * within ±{@value #TASK_OVERLAP_MINUTES} minutes (or both null/missing → conflict; one null one
+   * set → no conflict).
+   *
+   * <p>Soft-deleted tasks skip the overlap search and only clear flags. 404 for unknown task.
+   */
+  @Transactional
+  public void recomputeForTask(UUID taskId) {
+    Task task = taskRepo.findById(taskId).orElseThrow(() -> new NotFoundException("Task", taskId));
+
+    repo.deleteDoubleBookingFlagsForTask(taskId);
+
+    if (task.getDeletedAt() != null) {
+      return;
+    }
+    if (task.getStatus() == TaskStatus.DONE) {
+      return; // a DONE task can't conflict with anything per the rule
+    }
+
+    List<Task> candidates =
+        taskRepo.findOverlapCandidates(
+            task.getId(), task.getSchoolId(), task.getAssigneeUserId(), task.getDueDate());
+
+    for (Task other : candidates) {
+      if (!dueTimesOverlap(task.getDueTime(), other.getDueTime())) {
+        continue;
+      }
+      insertTaskDoubleBookingPair(task, other);
+      insertTaskDoubleBookingPair(other, task);
+    }
+  }
+
+  /** See {@link #removeFlagsForEvent} — same idea, scoped to a task. */
+  @Transactional
+  public void removeFlagsForTask(UUID taskId) {
+    repo.deleteDoubleBookingFlagsForTask(taskId);
+  }
+
+  static boolean dueTimesOverlap(LocalTime a, LocalTime b) {
+    if (a == null && b == null) {
+      return true;
+    }
+    if (a == null || b == null) {
+      return false;
+    }
+    long diff = Math.abs(Duration.between(a, b).toMinutes());
+    return diff <= TASK_OVERLAP_MINUTES;
+  }
+
+  private void insertTaskDoubleBookingPair(Task subject, Task other) {
+    ConflictFlag flag = new ConflictFlag();
+    flag.setOrgId(subject.getOrgId());
+    flag.setSchoolId(subject.getSchoolId());
+    flag.setEntityType(FlaggedEntity.TASK);
+    flag.setEntityId(subject.getId());
+    flag.setConflictType(SoftFlagType.DOUBLE_BOOKING);
+    flag.setConflictingEntityId(other.getId());
+    flag.setMessage("Overlaps with: " + other.getTitle());
+    repo.save(flag);
+  }
+
+  // -- holiday recompute ------------------------------------------------------
+
+  /**
+   * Paints HOLIDAY soft-flags onto every event and task that lands on the holiday's {@code
+   * (school_id, date)}. Idempotent: clears any existing flags pointing at the holiday first, then
+   * re-paints if {@code holiday.approved}. An unapproved holiday clears flags but inserts none — so
+   * approving and un-approving toggles the painted state cleanly.
+   *
+   * <p>The flag's {@code entity_id} is the event/task and {@code conflicting_entity_id} is the
+   * holiday (per playbook common-failure-points: don't filter by {@code entity_id = holiday.id};
+   * the holiday is on the conflicting side).
+   */
+  @Transactional
+  public void recomputeForHoliday(Holiday holiday) {
+    if (holiday == null || holiday.getId() == null) {
+      throw new ValidationException("holiday", "holiday and id are required");
+    }
+    repo.deleteHolidayFlagsForHoliday(holiday.getId());
+    if (!holiday.isApproved()) {
+      return;
+    }
+
+    String message = "Falls on holiday: " + holiday.getName();
+
+    List<Event> events = eventRepo.findBySchoolAndDate(holiday.getSchoolId(), holiday.getDate());
+    for (Event e : events) {
+      ConflictFlag f = new ConflictFlag();
+      f.setOrgId(e.getOrgId());
+      f.setSchoolId(e.getSchoolId());
+      f.setEntityType(FlaggedEntity.EVENT);
+      f.setEntityId(e.getId());
+      f.setConflictType(SoftFlagType.HOLIDAY);
+      f.setConflictingEntityId(holiday.getId());
+      f.setMessage(message);
+      repo.save(f);
+    }
+
+    List<Task> tasks =
+        taskRepo.findBySchoolIdAndDueDateAndDeletedAtIsNull(
+            holiday.getSchoolId(), holiday.getDate());
+    for (Task t : tasks) {
+      ConflictFlag f = new ConflictFlag();
+      f.setOrgId(t.getOrgId());
+      f.setSchoolId(t.getSchoolId());
+      f.setEntityType(FlaggedEntity.TASK);
+      f.setEntityId(t.getId());
+      f.setConflictType(SoftFlagType.HOLIDAY);
+      f.setConflictingEntityId(holiday.getId());
+      f.setMessage(message);
+      repo.save(f);
+    }
   }
 }
