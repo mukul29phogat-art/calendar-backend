@@ -29,6 +29,31 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.0 (Series 3) — GlobalExceptionHandler + ServiceError envelope — STATUS: ✅ done — **Series 3 begun**
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- New `com.childcarewow.calendar.exception` package consolidates all error types. `common.{ValidationException, PlatformUnavailableException}` moved here (`git mv` + package-decl rewrites).
+- `ServiceException` abstract base with `code` + `HttpStatus` + `field` + `message` + optional `cause`. **All 11 concrete subclasses derive from it** so the handler logic is one method.
+- 11 concrete exception types: `ValidationException` (400), `EventOnHolidayException` / `TaskOnHolidayException` / `DuplicateHolidayException` / `IdempotencyReplayException` (409), `InvalidTimeRangeException` / `InvalidRecurrenceException` / `AttachmentInvalidException` (400), `ForbiddenException` (403), `NotFoundException` (404), `PlatformUnavailableException` (503).
+- `ServiceError` + `ServiceErrorResponse` records (`@JsonInclude(NON_NULL)`) — envelope shape per arch spec §15: `{ok:false, error:{code,message,field?}, traceId}`.
+- `GlobalExceptionHandler @RestControllerAdvice`: 1 handler for all `ServiceException`s; 1 for `MethodArgumentNotValidException` → `VALIDATION_ERROR`; 1 catch-all for `Exception` → `INTERNAL_ERROR` with **sanitized** message (original logged but never leaked).
+- `TraceIdFilter @Component @Order(HIGHEST_PRECEDENCE)`: per-request UUID in MDC + `trace-id` response header (allow-listed in CORS exposed headers from Part 2.1).
+- `GlobalExceptionHandlerTest` (12 tests): unit tests on the handler directly (no `@WebMvcTest`); each subclass mapped to expected status; sanitized fallback verified.
+
+Files changed: 21 (2 deleted from `common/`, 13 new in `exception/`, 1 test, 5 modified for import + Set.copyOf rewrites).
+
+Validation: BUILD SUCCESS; 58 classes, all gates met. CI green on PR #42.
+
+Two `-Werror` fixes captured (reusable):
+1. **`initCause()` in constructor warns** ("possible 'this' escape"). Fix: ServiceException grew a `(code, status, field, message, cause)` 5-arg constructor; PlatformUnavailableException uses it instead of `initCause()`.
+2. **Spotless on a Write-rewritten file** caught CRLF (Windows tool default); `mvn spotless:apply` normalized.
+
+Next part: **Part 3.1 — `PolicyService` skeleton + first three actions** (`event.create`, `task.view`, `holiday.manage`).
+
+---
+
 ## Part 2.4 (Series 2) — GET /api/v1/auth/me + MeView — STATUS: ✅ done — **Series 2 closed**
 Date: 2026-05-07
 Operator: Mukul Phogat
