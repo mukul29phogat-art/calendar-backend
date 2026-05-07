@@ -29,6 +29,35 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.1 (Series 3) — PolicyService skeleton + first 3 actions — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `policy.PolicyService` interface: `can(UserPrincipal, String)` + default `assertCan` throwing `ForbiddenException` (mapped to 403 envelope by Part 3.0). Resource-bearing overloads (`Event` / `Task` parameters) deferred to Part 3.2 to avoid the import-layering churn until the resource shapes are needed.
+- `policy.PolicyServiceImpl @Service`: switch-expression over action strings.
+  - `event.create` → role ≠ PARENT
+  - `task.view` → role ≠ PARENT (D10: parents never see tasks)
+  - `holiday.manage` → ORG_ADMIN or SCHOOL_ADMIN
+  - default → false (unknown action denies; Part 3.2 fills in the catalog)
+  - null actor also denies
+- `PolicyServiceImplTest`: 4 roles × 3 actions = 12-case matrix via `@ParameterizedTest @CsvSource`, plus assertCan-throws + assertCan-allows + null-actor + unknown-action tests. Pure unit tests, no Spring context.
+
+Files changed (count: 3, all new):
+- `src/main/java/com/childcarewow/calendar/policy/{PolicyService, PolicyServiceImpl}.java`
+- `src/test/java/com/childcarewow/calendar/policy/PolicyServiceImplTest.java`
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS first try
+- [x] 60 classes analyzed, all gates met (incl. 100% on `PolicyServiceImpl` per CLAUDE.md §14)
+- [x] CI on PR #44 green
+
+Notes: clean Part. The 403-envelope path is exercised by `GlobalExceptionHandlerTest.forbiddenMapsTo403` from Part 3.0 — no separate slice test needed yet.
+
+Next part: **Part 3.2 — full PolicyService action set** (19 total actions, including resource-bearing `event.edit`, `event.delete`, `task.edit`, `task.delete` that need `Event` / `Task` arguments).
+
+---
+
 ## Part 3.0 (Series 3) — GlobalExceptionHandler + ServiceError envelope — STATUS: ✅ done — **Series 3 begun**
 Date: 2026-05-07
 Operator: Mukul Phogat
