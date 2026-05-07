@@ -41,6 +41,7 @@ class WhoAmIControllerTest {
         .thenReturn(
             new UserPrincipal(
                 STUB_ID,
+                "Olivia Park",
                 "olivia@ccw-demo.test",
                 Role.ORG_ADMIN,
                 UUID.fromString("11111111-1111-1111-1111-111111111111"),
@@ -74,6 +75,7 @@ class WhoAmIControllerTest {
     mvc.perform(get("/api/v1/whoami").header("Authorization", "Bearer " + token))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.id").value(STUB_ID.toString()))
+        .andExpect(jsonPath("$.name").value("Olivia Park"))
         .andExpect(jsonPath("$.email").value("olivia@ccw-demo.test"))
         .andExpect(jsonPath("$.role").value("ORG_ADMIN"))
         .andExpect(jsonPath("$.designation").value("Owner"))
