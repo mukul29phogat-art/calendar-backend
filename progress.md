@@ -29,6 +29,44 @@ Next part: X.Y+1
 
 ---
 
+## Part 4.0a (Series 4) — `@AuditRead` annotation + `AuditReadAspect` — STATUS: ✅ done · **OPENS SERIES 4**
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `audit/AuditRead` annotation: `@Retention(RUNTIME) @Target(METHOD)` with `action` (audit name), `subjectsFrom` (SpEL on response → `Collection<UUID>`), `sampleRate` (default 100). Marks read endpoints whose every successful invocation should land a row in `audit_events`.
+- `audit/AuditReadAspect` (Spring AOP `@Aspect @Component`): `@AfterReturning` advice that fires only on success.
+  - **Sample-rate gate**: `ThreadLocalRandom.nextInt(100) >= sampleRate` short-circuits without any audit work.
+  - **`subjectsFrom` resolution** via SpEL on the controller's return value. Accepts `Collection<UUID>` directly or `Collection<String>` (parsed to UUIDs; bad-format strings silently dropped — partial audit beats failure-on-bad-data).
+  - **One row per request**, not per subject — full UUID list lives under `metadata.subject_ids`. Storing one row per child would 100x audit-write volume on calendar reads for no compliance gain.
+  - **Failure handling**: every internal failure (SpEL miss, audit write throws, missing security/request context) is swallowed at WARN. Read audits MUST NEVER fail the user-facing read.
+
+Files changed (count: 3, all new):
+- `src/main/java/com/childcarewow/calendar/audit/{AuditRead,AuditReadAspect}.java`
+- `src/test/java/com/childcarewow/calendar/audit/AuditReadAspectIT.java`
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 55s; bundle gate ≥80% line met.
+- [x] `AuditReadAspectIT` — 6/6 tests green:
+  - **3-subject batched audit**: response with three `StudentView` records → exactly ONE `auditService.log` invocation with `metadata.subject_ids` containing all three UUIDs.
+  - **Empty response still records**: zero subjects → row written with empty `subject_ids` list (records that a query happened, even if the user has no children to see).
+  - Method throws → no audit row.
+  - **Sample rate ~50** over 200 invocations: ±25 tolerance (loosened from spec's ±10/100 for CI stability; ±25/200 is still > 5σ from boundary failures).
+  - **Sample rate 0** over 20 invocations: zero audit rows.
+  - `resolveSubjectIds` static helper edge cases: null result → `[]`; null/blank/malformed SpEL → `[]`; mixed UUID + valid String + non-UUID String → only valid UUIDs returned.
+- [x] Per-class JaCoCo: `AuditReadAspect` ~80% line. Uncovered branches are the internal try/catch (defensive — exercised only when something else upstream is already broken) and the non-`UserPrincipal` cast guard.
+- [x] CI green on PR #72 ([run 25514044674](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25514044674)) — clean first run after the Series-3 LF-normalization landed.
+
+Notes / surprises:
+- **The aspect package now hosts both write- and read-audit infrastructure** (`Audited`/`AuditAspect` from 3.3, `AuditRead`/`AuditReadAspect` from 4.0a). The two annotations are deliberately separate — they record fundamentally different things (write events keyed by a single target_id vs. read events listing many subject_ids) and a unified annotation would have been a leaky abstraction. Coexistence is fine: methods can carry both, and AspectJ runs both advices in a single proxy invocation.
+- `AuditService.log` from Part 3.3 is reused unchanged — `@Audited` writes with non-empty `metadata = Map.of()`, `@AuditRead` writes with `metadata = Map.of("subject_ids", subjectIds)`. The jsonb mapping (already validated in 1.7) handles the `Collection<UUID>` shape via Hibernate's `@JdbcTypeCode(SqlTypes.JSON)` on the entity.
+- **Working-tree noise from the .gitattributes change.** After Part 3.14 landed `*.java text eol=lf` in `.gitattributes`, the next checkout on Windows triggered a renormalization that flagged 104 files as "modified" (CRLF in working tree vs LF in index). The PR was clean (only the 3 actual files), but `git status` was alarming. Fix: `git checkout .` on `main` after the merge to refresh the working tree to LF. Future Windows checkouts shouldn't see this once each developer has done it once.
+- Test method `oneRowPerRequestWithAllSubjectIds` uses `argThat(meta -> { ... return ...; })` to inspect the metadata Map — Mockito's `eq()` won't work because `Map.of("subject_ids", listA)` and `Map.of("subject_ids", listB)` are equal only when the lists are equal, and the order in which we extract UUIDs from a list of `StudentView`s is the same order, but defensive `containsAll` + size check is more robust to future SpEL impl changes.
+
+Next part: 4.1 — `GET /api/v1/users` (assignee selectors, filtered by schoolId + role; reads from platform DB via `platformJdbcTemplate`).
+
+---
+
 ## Part 3.14 (Series 3) — `FileUploadService` + Supabase signed-upload — STATUS: ✅ done · **CLOSES SERIES 3**
 Date: 2026-05-07
 Operator: Mukul Phogat
