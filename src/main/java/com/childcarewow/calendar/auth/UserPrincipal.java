@@ -10,6 +10,7 @@ import java.util.UUID;
  */
 public record UserPrincipal(
     UUID id,
+    String name,
     String email,
     Role role,
     UUID orgId,

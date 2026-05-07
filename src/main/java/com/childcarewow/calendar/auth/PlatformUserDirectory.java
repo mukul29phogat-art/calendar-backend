@@ -33,13 +33,14 @@ public class PlatformUserDirectory {
     try {
       return platformJdbc.queryForObject(
           """
-          SELECT id, org_id, email, role, designation
+          SELECT id, org_id, name, email, role, designation
           FROM users
           WHERE id = ?
           """,
           (rs, rowNum) -> {
             UUID id = (UUID) rs.getObject("id");
             UUID orgId = (UUID) rs.getObject("org_id");
+            String name = rs.getString("name");
             String email = rs.getString("email");
             Role role = Role.valueOf(rs.getString("role"));
             String designation = rs.getString("designation");
@@ -47,7 +48,15 @@ public class PlatformUserDirectory {
             Set<UUID> classroomIds = loadClassroomIds(id);
             Set<UUID> childStudentIds = role == Role.PARENT ? loadChildStudentIds(id) : Set.of();
             return new UserPrincipal(
-                id, email, role, orgId, schoolIds, classroomIds, childStudentIds, designation);
+                id,
+                name,
+                email,
+                role,
+                orgId,
+                schoolIds,
+                classroomIds,
+                childStudentIds,
+                designation);
           },
           userId);
     } catch (EmptyResultDataAccessException e) {

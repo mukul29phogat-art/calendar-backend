@@ -38,6 +38,7 @@ class PlatformUserDirectoryIT {
   @Test
   void orgAdminHasBothSchools() {
     UserPrincipal p = directory.load(OLIVIA_ORG_ADMIN);
+    assertThat(p.name()).isEqualTo("Olivia Park");
     assertThat(p.role()).isEqualTo(Role.ORG_ADMIN);
     assertThat(p.email()).isEqualTo("olivia@ccw-demo.test");
     assertThat(p.designation()).isEqualTo("Owner");
