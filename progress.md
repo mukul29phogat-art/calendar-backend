@@ -29,6 +29,85 @@ Next part: X.Y+1
 
 ---
 
+## Part 0.7 (Series 0) — Dockerfile multi-stage build — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `Dockerfile` (repo root, syntax `dockerfile:1.7`): build stage on `eclipse-temurin:21-jdk-alpine` runs `./mvnw package`, extracts the fat jar; runtime stage on `eclipse-temurin:21-jre-alpine` copies the exploded layout, runs as a non-root `app` user, exposes 8080, has a HEALTHCHECK against `/actuator/health`, and uses the SB 3.3 `org.springframework.boot.loader.launch.JarLauncher` ENTRYPOINT.
+- `.dockerignore` excludes `target/`, `.git/`, `.idea/`, `docs/`, `infrastructure/`, etc. — keeps the build context tight.
+- `.gitattributes` forces LF endings on `mvnw` + `*.sh` so Windows checkouts produce shell scripts that Alpine `/bin/sh` can parse (without it the Dockerfile build fails with `/bin/sh: ./mvnw: not found` on a CRLF shebang).
+
+Files changed (count: 3, all new):
+- `Dockerfile` (new)
+- `.dockerignore` (new)
+- `.gitattributes` (new)
+
+Validation:
+- [x] `docker build -t calendar-backend:dev .` → success
+- [x] **Image size: 92 MB** (playbook target <250 MB; ideal ~180 MB on JRE-alpine — we're under both)
+- [x] `docker run --entrypoint id calendar-backend:dev` → `uid=100(app) gid=101(app)` (non-root)
+- [x] `docker run -p 8080:8080 ...` + `curl /actuator/health` → HTTP 200 in ~6s with `calendarDataSource` UP, `platformDataSource` UP, `platformDb` UP, overall `status: UP`
+- [x] `docker inspect <container>` → `health=healthy` (HEALTHCHECK passing after one probe)
+- [x] `docker history` → no JDK in final layer (multi-stage working)
+
+Notes / surprises (deviations from playbook spec — both verified locally):
+- **Added `COPY --from=build /build/org org`.** The playbook's runtime stage doesn't copy this dir, but it contains `org/springframework/boot/loader/launch/JarLauncher.class` and friends. Without it the ENTRYPOINT fails immediately at startup with `NoClassDefFoundError`. Fix added to the Dockerfile with a comment.
+- **Preserved `BOOT-INF/lib` + `BOOT-INF/classes` paths.** The playbook flattens them to `lib/` + `/app` which works for SB 2.x's old `org.springframework.boot.loader.JarLauncher` but breaks SB 3.2+'s new `org.springframework.boot.loader.launch.JarLauncher` (which reads `BOOT-INF/classpath.idx`). Confirmed locally: spec'd layout fails with `ClassNotFoundException: org.springframework.boot.SpringApplication`; preserved layout boots cleanly. Both fixes consolidated into the Dockerfile with explanatory comments.
+- For local Windows runs of the container, DB URLs need `host.docker.internal` overrides via env vars (`-e SPRING_DATASOURCE_CALENDAR_URL=...`) since `localhost` inside a container is the container, not the host. Captured the pattern in this entry; not in Dockerfile (Dockerfile is for prod where DB URLs come from Secrets Manager, Part 0.8).
+
+Next part: **Part 1.1 (Series 1) — V2 events + event_attendees + event_students + event_excluded_participants schema.** First real domain code: Flyway migration introducing the `events` table and its three join tables. **Series 0 is closed.**
+
+---
+
+## Part 0.6.5 (post-Series-0 follow-up) — Re-enable Testcontainers; gate FlywayMigrationIT to Linux/Mac — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `pom.xml`: uncommented `org.testcontainers:junit-jupiter` + `:postgresql` (test scope, BOM-managed). Replaces the explanatory XML comment block with a brief note pointing at the `@EnabledOnOs` gate.
+- `FlywayMigrationIT`: now uses a fresh `PostgreSQLContainer` with `@DynamicPropertySource` overriding calendar/platform datasource URLs. `@EnabledOnOs({OS.LINUX, OS.MAC})` at class level skips the entire class on Windows (Docker Desktop 4.71 npipe handshake failure documented in memory `backend_part_0_4_testcontainers_windows.md`).
+
+Files changed (count: 2):
+- `pom.xml` (modified)
+- `src/test/java/com/childcarewow/calendar/FlywayMigrationIT.java` (modified)
+
+Validation:
+- [x] Local Windows `mvn verify`: 4 tests run, **2 skipped** (FlywayMigrationIT). Build green; JaCoCo gate met.
+- [x] CI Linux `mvn verify` (PR #18): 4 tests run, 0 skipped — FlywayMigrationIT exercised against a fresh Postgres container.
+
+Notes / surprises:
+- The `@EnabledOnOs` annotation is at class level (not method level) so the static `@Container POSTGRES` field initialization is also skipped on Windows, avoiding the npipe failure during JUnit's `@BeforeAll` phase.
+- Coverage stays above 80%: FlywayMigrationIT didn't contribute to main-class coverage anyway (other ITs already covered DatasourceConfig + PlatformDbHealthIndicator).
+
+Next part: Part 0.7 (immediately after this in the same session)
+
+---
+
+## Part 0.6.4 (post-Part-0.6 follow-up) — Maven Wrapper — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `mvnw` (executable script) + `mvnw.cmd` (Windows) + `.mvn/wrapper/maven-wrapper.properties` (pinned to Maven 3.9.9). Generated via `./mvnw wrapper:wrapper` (script-only flavor — no `maven-wrapper.jar` needed; the wrapper script downloads Maven on first use).
+
+Files changed (count: 3, all new):
+- `mvnw` (new, executable)
+- `mvnw.cmd` (new)
+- `.mvn/wrapper/maven-wrapper.properties` (new)
+
+Validation:
+- [x] `./mvnw -version` → Maven 3.9.9 + Java 21
+- [x] CI run on the PR was green (mvn wrapper not yet used by CI which has setup-java + system maven)
+
+Notes / surprises:
+- This was a prerequisite for Part 0.7's Dockerfile build stage which calls `./mvnw` inside the build image (so we don't need Maven preinstalled in `eclipse-temurin:21-jdk-alpine`).
+- The `.gitignore` exception for `maven-wrapper.jar` (added in Part 0.4) is now moot since the script-only wrapper flavor was used — but harmless and kept.
+
+Next part: Part 0.6.5 (Testcontainers re-enable)
+
+---
+
 ## Part 0.6 (Series 0) — GitHub Actions CI workflow — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
