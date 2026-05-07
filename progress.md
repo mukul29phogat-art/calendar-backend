@@ -29,6 +29,46 @@ Next part: X.Y+1
 
 ---
 
+## Part 5.3 (Series 5) — `POST /api/v1/events` (SCHOOL type + excludedParticipantIds) — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `CreateEventRequest`: gains `excludedParticipantIds: List<UUID>` (optional). Two backward-compat constructors (10-arg from Part 5.1, 12-arg from Part 5.2) preserve all earlier callers.
+- `EventView`: gains `excludedParticipants: List<ExcludedParticipantView>` where each entry tags the id as `"USER"` or `"STUDENT"`.
+- SCHOOL-type validation: no classroom, no attendees, no students — each combination rejected with a clear field-targeted error. `excludedParticipantIds` only valid for SCHOOL.
+- **Resolution logic in `EventService.resolveExclusions(ids)`**: `PlatformEntityValidator.userExists(id)` first → if true, type=USER. Else `studentExists(id)` → if true, type=STUDENT. Else `ValidationException` with the offending id in the message ("matches neither a user nor a student"). USER-precedence rule documented in Javadoc per playbook common-failure-points.
+- Insertion via `calendarJdbcTemplate.batchUpdate` into `event_excluded_participants` with `ON CONFLICT DO NOTHING` (same race-safety pattern as 5.2). The migration's `CHECK (participant_type IN ('USER', 'STUDENT'))` is the DB-side guard.
+
+Files changed (count: 7):
+- `src/main/java/com/childcarewow/calendar/event/{CreateEventRequest,EventView,EventMapper,EventService}.java`
+- `src/test/java/com/childcarewow/calendar/event/{EventServiceIT,EventControllerTest}.java`
+- `docs/openapi.json` — regenerated with new fields + `ExcludedParticipantView` component.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m45s; bundle gate ≥80% line met.
+- [x] `EventServiceIT` — 19/19 tests green:
+  - 11 prior tests (CLASSROOM + CUSTOM + holiday + overlap + validation) still pass.
+  - **`schoolEventCreatesWithoutClassroomOrAttendees`**: SCHOOL with empty arrays → `event_attendees` and `event_students` join-table counts both 0; `excludedParticipants` empty.
+  - **`schoolEventWithMixedExclusionsTagsParticipantTypeCorrectly`**: 1 user + 1 student → response includes both `ExcludedParticipantView`s; direct SQL `SELECT participant_id, participant_type FROM event_excluded_participants` confirms USER and STUDENT tags landed correctly.
+  - **`schoolEventRejectsExcludedIdMatchingNeitherUserNorStudent`**: bad UUID → `ValidationException`.
+  - **`schoolEventRejectsClassroomId`**: SCHOOL + classroomId → reject.
+  - **`rejectsExcludedParticipantIdsForNonSchoolEvent`**: CLASSROOM + excludedParticipantIds → "only valid for SCHOOL" error.
+- [x] `EventControllerTest` — 4/4 slice tests still green; the EventView mock just needed one more `List.of()` for the new exclusions field.
+- [x] OpenAPI snapshot regenerated — `excludedParticipantIds`, `excludedParticipants`, and the `ExcludedParticipantView` schema all surface in `docs/openapi.json`.
+- [x] CI green on PR #88 ([run 25520983975](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25520983975)).
+
+Notes / surprises:
+- **Three constructor overloads on `CreateEventRequest` is the limit.** Each new field added in 5.2 (2 fields) and 5.3 (1 field) needed an overload to preserve prior call sites. If 5.4+ adds another optional field, dropping the overloads and forcing call-site updates becomes the better path — three is already a maintenance smell. Trade-off documented inline.
+- **USER-vs-STUDENT precedence ambiguity is largely theoretical**. UUIDs are 122 bits of entropy; collisions across the two tables would require malicious construction. The precedence rule (USER wins) exists for completeness, not for any expected production case. Documented so a future maintainer doesn't second-guess the choice.
+- **The `resolveExclusions` step happens BEFORE `eventRepo.saveAndFlush`** so a bad id fails fast without inserting an orphan event row. Java records the exclusions list, persists the event, then writes the join rows in the same transaction. If the join-row insert ever fails, the entire `@Transactional` rolls back the event row too.
+- **No new policy actions** for SCHOOL — the existing `event.create.schoolType` action (already in `PolicyServiceImpl` from Part 3.2) handles the gate. The controller's existing `if (req.type() == SCHOOL) policy.assertCan(actor, "event.create.schoolType")` was put in place specifically for this scenario.
+- **Series 5 milestone**: with 5.3 merged, the create flow is feature-complete across all three event types. The remaining 7 parts of Series 5 (read, update, delete, holiday-blocks, notifications) build on this core.
+
+Next part: 5.4 — `GET /api/v1/events/{id}` + `GET /api/v1/events?from=&to=&...` (read endpoints with calendar-window query semantics).
+
+---
+
 ## Part 5.2 (Series 5) — `POST /api/v1/events` (CUSTOM type) — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
