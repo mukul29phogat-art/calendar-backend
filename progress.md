@@ -29,6 +29,49 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.6 (Series 3) — `RecurrenceService` skeleton + DAILY expansion + 1000-cap — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `recurrence.RecurrenceService` (Spring `@Service`):
+  - **CRUD**: `create(rule, taskDueDate)`, `update(ruleId, patch, taskDueDate)`, `shortenUntil(ruleId, newUntil)`, `remove(ruleId)`. All write methods are `@Transactional`. `shortenUntil` rejects extension (would surprise users with new occurrences they never asked for); only shrinks. `remove` 404s before deletion to keep error semantics consistent.
+  - **`expand(Task, LocalDate from, LocalDate to)`** → `ExpansionResult(List<LocalDate> occurrences, boolean truncated)`. Inclusive on both ends. Returns empty without error when the task is non-recurring, the rule has been deleted, or the requested window doesn't intersect `[task.dueDate, rule.untilDate]`. WEEKLY and MONTHLY cycles `throw new UnsupportedOperationException` with a message pointing at Parts 3.7 / 3.8.
+  - **Validation** (creation/update): `untilDate` required, `>= taskDueDate`, `<= taskDueDate + 5 years`. Misses throw `InvalidRecurrenceException` → 400 `INVALID_RECURRENCE` envelope.
+  - **Hard cap** `MAX_OCCURRENCES = 1000` per `expand()` call. Past that, the list is truncated and `truncated=true`. Defends against malformed or legacy rules slipping past the validation cap.
+- `recurrence.ExpansionResult` — record with `(List<LocalDate> occurrences, boolean truncated)`. Javadoc documents that callers must surface `truncated` to the API response per spec § 15.
+
+Files changed (count: 3, all new):
+- `src/main/java/com/childcarewow/calendar/recurrence/{RecurrenceService,ExpansionResult}.java`
+- `src/test/java/com/childcarewow/calendar/recurrence/RecurrenceServiceTest.java`
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 33s; bundle gate ≥80% line met.
+- [x] `RecurrenceServiceTest` — 20/20 unit tests green (Mockito-mocked repo, no Spring context):
+  - DAILY 14-day rule emits exactly 14 occurrences with `truncated=false`.
+  - DAILY respects the request window's start (clamps to dueDate; tested with offset window).
+  - Window outside rule range → empty (both before-dueDate and after-untilDate cases).
+  - Non-recurring task → empty without touching repo.
+  - Deleted rule → empty (graceful, not 404).
+  - **5-year DAILY rule expanded over its full range → exactly 1000 occurrences + `truncated=true`** (defensive cap at the maximum allowed by validation).
+  - WEEKLY/MONTHLY throw `UnsupportedOperationException` with the right message.
+  - 4 validation rejects (until < due, until > due+5y, missing until, missing cycle); 1 valid-create persists.
+  - `shortenUntil` rejects extension, persists shrink, rejects null, 404s on unknown.
+  - `update` applies patch fields; 404s on unknown.
+  - `remove` 404s on unknown; otherwise deletes.
+- [x] Per-class JaCoCo: `RecurrenceService` 5/287 instr missed (~98% line, ~94% branch). The single uncovered arm of the cycle-switch is the MONTHLY case — lands in Part 3.8.
+- [x] CI green on PR #54 ([run 25503094888](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25503094888)).
+
+Notes / surprises:
+- Used pure Mockito unit tests instead of `@SpringBootTest`. The service has no DB-shape concerns (no `@ColumnTransformer`, no jsonb) — every behavior is logic over `RecurrenceRule`/`Task` POJOs and a mockable repo. Ran in 1.8s instead of 11s+; saves ~10s per CI build over the project's lifetime.
+- The 1000-cap test deliberately uses a **5-year** rule rather than the playbook's "10 years" example — the validation cap means we can never persist anything longer, so 5 years is the worst case truncation actually reaches. 5 years × 365 + leap days = 1827 days → still > 1000 → truncated.
+- `expand` returns empty for a deleted rule rather than 404 because the calendar window read is bulk: a single soft-deleted rule shouldn't fail the entire window response. The right surface for "this specific task's rule was deleted" is the task-detail endpoint (Series 5).
+- `shortenUntil` is the API for the FE's "this and following" task-edit flow (FE prototype `eventsService.ts` already uses this verb). Keeping it as a separate method avoids the trap of someone using `update` to silently extend `untilDate`.
+
+Next part: 3.7 — `RecurrenceService` WEEKLY expansion (`due_day_of_week` 0=Sun matching JS `Date.getDay()`; same 1000-cap applies).
+
+---
+
 ## Part 3.5 (Series 3) — `TimezoneService` (Caffeine + DST correctness) — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
