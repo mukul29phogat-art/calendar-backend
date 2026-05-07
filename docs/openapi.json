@@ -286,6 +286,13 @@
               "type" : "string",
               "format" : "uuid"
             }
+          },
+          "excludedParticipantIds" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string",
+              "format" : "uuid"
+            }
           }
         }
       },
@@ -362,11 +369,29 @@
               "format" : "uuid"
             }
           },
+          "excludedParticipants" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/ExcludedParticipantView"
+            }
+          },
           "softFlags" : {
             "type" : "array",
             "items" : {
               "$ref" : "#/components/schemas/SoftFlagView"
             }
+          }
+        }
+      },
+      "ExcludedParticipantView" : {
+        "type" : "object",
+        "properties" : {
+          "participantId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "participantType" : {
+            "type" : "string"
           }
         }
       },

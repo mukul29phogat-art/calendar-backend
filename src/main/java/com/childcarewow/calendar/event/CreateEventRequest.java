@@ -29,7 +29,8 @@ public record CreateEventRequest(
     UUID organizerUserId,
     Boolean inviteParents,
     List<UUID> attendeeUserIds,
-    List<UUID> studentIds) {
+    List<UUID> studentIds,
+    List<UUID> excludedParticipantIds) {
 
   /** Defensive: callers may omit the arrays — treat absent as empty. */
   public List<UUID> attendeeUserIds() {
@@ -40,9 +41,13 @@ public record CreateEventRequest(
     return studentIds == null ? List.of() : studentIds;
   }
 
+  public List<UUID> excludedParticipantIds() {
+    return excludedParticipantIds == null ? List.of() : excludedParticipantIds;
+  }
+
   /**
-   * Convenience constructor for callers that pre-date {@code attendeeUserIds} / {@code studentIds}
-   * (Part 5.1 tests, in particular). Defaults both lists to empty.
+   * Convenience constructor for callers that pre-date the join-table arrays (Part 5.1 tests).
+   * Defaults all three to empty.
    */
   public CreateEventRequest(
       EventType type,
@@ -67,6 +72,37 @@ public record CreateEventRequest(
         organizerUserId,
         inviteParents,
         null,
+        null,
+        null);
+  }
+
+  /** Convenience constructor for Part 5.2 callers; defaults excludedParticipantIds to empty. */
+  public CreateEventRequest(
+      EventType type,
+      UUID schoolId,
+      String title,
+      String description,
+      UUID classroomId,
+      OffsetDateTime startDt,
+      OffsetDateTime endDt,
+      Boolean allDay,
+      UUID organizerUserId,
+      Boolean inviteParents,
+      List<UUID> attendeeUserIds,
+      List<UUID> studentIds) {
+    this(
+        type,
+        schoolId,
+        title,
+        description,
+        classroomId,
+        startDt,
+        endDt,
+        allDay,
+        organizerUserId,
+        inviteParents,
+        attendeeUserIds,
+        studentIds,
         null);
   }
 }
