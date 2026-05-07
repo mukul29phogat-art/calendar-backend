@@ -51,4 +51,23 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
           + "AND e.deletedAt IS NULL")
   List<Event> findBySchoolAndDate(
       @Param("schoolId") UUID schoolId, @Param("date") java.time.LocalDate date);
+
+  /**
+   * Calendar-window read for the GET /events list endpoint. Returns non-soft-deleted events at the
+   * given school with {@code start_dt} in the inclusive {@code [from, to]} window, optionally
+   * filtered by type. Sorted by start_dt for stable rendering on the FE timeline.
+   */
+  @Query(
+      "SELECT e FROM Event e "
+          + "WHERE e.schoolId = :schoolId "
+          + "AND e.deletedAt IS NULL "
+          + "AND e.startDt >= :from "
+          + "AND e.startDt <= :to "
+          + "AND (:type IS NULL OR e.type = :type) "
+          + "ORDER BY e.startDt")
+  List<Event> findInWindow(
+      @Param("schoolId") UUID schoolId,
+      @Param("from") OffsetDateTime from,
+      @Param("to") OffsetDateTime to,
+      @Param("type") EventType type);
 }
