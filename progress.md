@@ -29,6 +29,49 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.12 (Series 3) — `recomputeForTask` + `recomputeForHoliday` — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `SoftFlagService.recomputeForTask(UUID taskId)` — same-day same-assignee task overlap (architecture spec § 7.3). Conflict rule: same school + same assignee + same `dueDate` + neither task `DONE` + `dueTime` within ±120 min (or both null/missing → conflict; one null + one set → no conflict). Same bidirectional A↔B insertion pattern as `recomputeForEvent`; both rows in one `@Transactional`. Soft-deleted task or `DONE`-status subject only clears flags. 404 for unknown task.
+- `SoftFlagService.recomputeForHoliday(Holiday holiday)` — idempotent paint-or-clear by `holiday.approved`. Always clears HOLIDAY flags pointing AT the holiday via `conflictingEntityId` (the playbook common-failure-points: HOLIDAY's `entity_id` is the event/task, the `conflicting_entity_id` is the holiday — don't filter by `entity_id`). If approved, paints one HOLIDAY flag per matching event (UTC-date match via `FUNCTION('DATE', start_dt)`) and per matching non-deleted task on `(school_id, due_date)`. Rejects null holiday or holiday without an `id`.
+- `SoftFlagService.removeFlagsForTask(UUID taskId)` — task analogue of `removeFlagsForEvent`.
+- `SoftFlagService.dueTimesOverlap(LocalTime, LocalTime)` — package-private static helper. `(null, null) → true`, `(null, set) → false`, `(set, null) → false`, otherwise `|Δminutes| ≤ 120`.
+- Repository additions:
+  - `ConflictFlagRepository.deleteDoubleBookingFlagsForTask(taskId)` — TASK + DOUBLE_BOOKING + (entityId OR conflictingEntityId).
+  - `ConflictFlagRepository.deleteHolidayFlagsForHoliday(holidayId)` — HOLIDAY + conflictingEntityId match.
+  - `TaskRepository.findOverlapCandidates(...)` — same school + assignee + dueDate + non-DONE + non-deleted (dueTime filter is service-side).
+  - `TaskRepository.findBySchoolIdAndDueDateAndDeletedAtIsNull(...)` — derived query for the holiday-paint hook.
+  - `EventRepository.findBySchoolAndDate(schoolId, date)` — UTC-date match (`FUNCTION('DATE', startDt)`).
+
+Files changed (count: 5):
+- `src/main/java/com/childcarewow/calendar/softflag/SoftFlagService.java`
+- `src/main/java/com/childcarewow/calendar/conflict/ConflictFlagRepository.java`
+- `src/main/java/com/childcarewow/calendar/event/EventRepository.java`
+- `src/main/java/com/childcarewow/calendar/task/TaskRepository.java`
+- `src/test/java/com/childcarewow/calendar/softflag/SoftFlagServiceTest.java`
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 47s; bundle gate ≥80% line met.
+- [x] `SoftFlagServiceTest` — 30/30 tests green:
+  - **Task recompute**: bidirectional pair (ArgumentCaptor verifies both directions); both times null → conflict; **both directions of one-null-one-set → no conflict** (full branch coverage); 4h apart → no conflict; **exactly 120 min → conflict** (boundary); soft-deleted → clear-only; subject DONE → clear-only; 404 unknown.
+  - **Holiday paint**: 2 events + 1 task → 3 flags with HOLIDAY type and `holiday.id` as `conflictingEntityId` and "Falls on holiday: Memorial Day" message; unapproved → clears but paints nothing; no matches → clears but paints nothing; null/transient holiday rejected.
+  - `removeFlagsForTask` delegates to repo.
+- [x] **`SoftFlagService` 100% across every axis**: 0/494 instr · 0/52 branch · 0/127 line · 0/15 method (spec § 3.12.4 mandate met).
+- [x] CI green on PR #66 ([run 25507139684](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25507139684)).
+
+Notes / surprises:
+- The first verify run had **96% branch** on `SoftFlagService` (2 missed). Cause: the `(a == null || b == null)` short-circuit in `dueTimesOverlap` has two branches — JaCoCo only sees both covered when both subject-null and other-null cases run. My initial test only had `(set, null)`. Added the symmetric `(null, set)` case to push to 100%. Lesson: short-circuit `||` requires testing **both** sides of the OR independently, not just one.
+- The `FUNCTION('DATE', start_dt)` in `EventRepository.findBySchoolAndDate` is the JPQL escape hatch for Postgres-specific date casting. Hibernate translates it to `CAST(start_dt AS DATE)` which Postgres handles. Trade-off: this matches by **UTC date**, not school-local date. For schools in timezones that span midnight UTC, an event at 23:00 local on the holiday's date might be stored with a UTC date one day off. Documented in the EventRepository Javadoc as an acceptable approximation since the HOLIDAY flag is a **soft warning** — the FE shows it, the user can dismiss. A more precise version would use `TimezoneService` to compute the UTC range for the school-local date; revisit if false-match telemetry shows it matters.
+- Task `dueTime` filter at the service layer (Java `Duration.between(...).toMinutes()`) rather than in JPQL because JPQL has no clean way to express ±120 min on `LocalTime` values that may be null. The candidate set is small (one assignee per day usually 0 or 1 task), so the in-memory filter has no meaningful cost.
+- `recomputeForHoliday(holiday)` takes the loaded entity, not just an ID. Reason: the caller (Series 5's holiday-approve controller) already has the loaded entity from the approval workflow, so passing the entity avoids a redundant SELECT. The trade-off is that the service trusts the caller's data freshness — if `holiday.approved` was flipped between load and call, the wrong branch fires. Acceptable because the caller is wrapping the call in a single transaction with the approval write.
+- Series 3 milestone: with this part, **all three recompute triggers and the dismiss path are 100% covered.** The remaining four parts in Series 3 are middleware (3.13 idempotency), policy (3.14 file upload), and notifications (3.15) — these are separate services, not extensions of `SoftFlagService`.
+
+Next part: 3.13 — `IdempotencyMiddleware` honoring the `Idempotency-Key` header on POST creates per architecture spec § 6.10 (24h replay window, replay-with-different-payload → 409 IDEMPOTENCY_REPLAY).
+
+---
+
 ## Part 3.11 (Series 3) — `recomputeForEvent` (bidirectional DOUBLE_BOOKING) — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
