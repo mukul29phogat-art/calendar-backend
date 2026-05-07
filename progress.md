@@ -29,6 +29,46 @@ Next part: X.Y+1
 
 ---
 
+## Part 5.2 (Series 5) — `POST /api/v1/events` (CUSTOM type) — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `CreateEventRequest` gains optional `attendeeUserIds: List<UUID>` and `studentIds: List<UUID>`. Both default to empty list when null. Added a backward-compat 10-arg constructor so Part 5.1 callers + tests still compile.
+- `EventView` gains the same two fields — populated for CUSTOM events, empty lists for CLASSROOM. The values echo the request input (sanitized through PlatformEntityValidator) rather than re-fetching from the DB; saves a round-trip on the create path.
+- `EventService.create` now handles `EventType.CUSTOM`:
+  - Validation: `assertUserExists` for each attendee, `assertStudentExists` for each student. Caffeine cache absorbs per-id round-trip cost.
+  - After `saveAndFlush + em.refresh`, batch-insert via `calendarJdbcTemplate.batchUpdate` with `ON CONFLICT DO NOTHING` on both join tables.
+  - Empty-array fast path: short-circuits without sending an empty batch (cheap and avoids Postgres-driver edge cases).
+- `validateRequest` now rejects only SCHOOL (Part 5.3) and unknown enum values; CUSTOM is fully supported.
+
+Files changed (count: 7):
+- `src/main/java/com/childcarewow/calendar/event/{CreateEventRequest,EventView,EventMapper,EventService}.java`
+- `src/test/java/com/childcarewow/calendar/event/{EventServiceIT,EventControllerTest}.java`
+- `docs/openapi.json` — regenerated baseline with the two new optional fields on `CreateEventRequest` + `EventView`.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m56s; bundle gate ≥80% line met.
+- [x] `EventServiceIT` — 15/15 tests green:
+  - 11 existing CLASSROOM tests still pass (backward-compat constructor).
+  - **`customEventWithAttendeesAndStudentsWritesJoinTables`**: 2 attendees + 2 students → response echoes both arrays AND `SELECT COUNT(*) FROM event_attendees/event_students` returns 2 each.
+  - **`customEventWithEmptyArraysWritesNoJoinRows`**: empty-array fast path; zero join rows.
+  - **`customEventRejectsUnknownAttendee` / `customEventRejectsUnknownStudent`**: ValidationException via PlatformEntityValidator.
+  - The previous `rejectsCustomTypeUntil5_2` was repurposed into `rejectsSchoolTypeUntil5_3`.
+- [x] `EventControllerTest` — 4/4 slice tests still green; the EventView mock just needed the two new list fields appended (both empty for CLASSROOM).
+- [x] **OpenAPI drift** caught by `OpenApiSnapshotIT` on the first verify run; baseline regenerated via `OPENAPI_SNAPSHOT=update` env var.
+- [x] CI green on PR #86 ([run 25520191269](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25520191269)).
+
+Notes / surprises:
+- **`ON CONFLICT DO NOTHING`** on the batch insert is defensive against race conditions (two concurrent retries via the IdempotencyFilter in flight). The IdempotencyFilter normally short-circuits replays before the controller, but a misconfigured caller without `Idempotency-Key` could still double-fire. The ON CONFLICT clause makes the second batch a no-op rather than a 23505 unique-violation 500. Both join tables have the composite PK `(event_id, user_id)` / `(event_id, student_id)` so the constraint is structural.
+- **Backward-compat constructor pattern** worked cleanly. 11 prior CreateEventRequest call sites compile unchanged because the 10-arg overload delegates to the 12-arg canonical constructor with `null` defaults. Java records support multiple constructors as long as the additional ones eventually call the canonical one. The defensive accessor methods (`attendeeUserIds()` and `studentIds()`) on the record handle `null → empty` translation transparently for service code.
+- **Echoing request arrays back in EventView** is a deliberate choice over re-fetching from the join tables. Saves a SELECT roundtrip on the hot create path; the values are already known to be correct because they passed PlatformEntityValidator. If the read endpoint (Part 5.4) needs to surface attendees/students from the actual rows, it'll do its own SELECT; this part's response is verifiable without it.
+- **Calendar `JdbcTemplate` injected alongside JPA**: This is the first place we mix the two access patterns in the same service. JPA for the entity round-trip (Hibernate manages `created_at`/`updated_at`); JdbcTemplate for the join-table batch (Hibernate's collection mapping for `@ManyToMany` would have been heavier — implicit cascades, dirty-checking overhead, and we'd have to model the join entries as a `Set<UUID>` proxy on Event which is awkward when the table has no domain meaning). Acceptable trade-off; both go through the same `calendarDataSource` so transactions are unified.
+
+Next part: 5.3 — POST /api/v1/events for SCHOOL type with `excludedParticipantIds[]` writing to the third calendar-owned join table.
+
+---
+
 ## Part 5.1 (Series 5) — `POST /api/v1/events` (CLASSROOM type) — STATUS: ✅ done · **OPENS SERIES 5**
 Date: 2026-05-07
 Operator: Mukul Phogat
