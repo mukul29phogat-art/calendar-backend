@@ -7,6 +7,7 @@ import com.childcarewow.calendar.task.RecurrenceRule;
 import com.childcarewow.calendar.task.RecurrenceRuleRepository;
 import com.childcarewow.calendar.task.Task;
 import java.time.LocalDate;
+import java.time.YearMonth;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.List;
@@ -124,9 +125,41 @@ public class RecurrenceService {
     return switch (rule.getCycle()) {
       case DAILY -> expandDaily(winStart, winEnd);
       case WEEKLY -> expandWeekly(rule, winStart, winEnd);
-      case MONTHLY ->
-          throw new UnsupportedOperationException("Cycle MONTHLY not yet implemented (Part 3.8)");
+      case MONTHLY -> expandMonthly(rule, winStart, winEnd);
     };
+  }
+
+  /**
+   * Walks months in {@code [winStart, winEnd]} inclusive. For each month, snaps {@code
+   * dueDayOfMonth} to {@code min(d, lastDayOfMonth)} so that "the 31st" lands on Feb 28/29 or on
+   * the 30th of 30-day months. Emits the resulting date if it falls within the window.
+   */
+  private static ExpansionResult expandMonthly(
+      RecurrenceRule rule, LocalDate winStart, LocalDate winEnd) {
+    if (rule.getDueDayOfMonth() == null) {
+      throw new InvalidRecurrenceException("MONTHLY cycle requires dueDayOfMonth");
+    }
+    int dom = rule.getDueDayOfMonth();
+    if (dom < 1 || dom > 31) {
+      throw new InvalidRecurrenceException("dueDayOfMonth must be in 1..31");
+    }
+
+    List<LocalDate> occurrences = new ArrayList<>();
+    boolean truncated = false;
+    YearMonth ym = YearMonth.from(winStart);
+    YearMonth lastYm = YearMonth.from(winEnd);
+    while (!ym.isAfter(lastYm)) {
+      if (occurrences.size() >= MAX_OCCURRENCES) {
+        truncated = true;
+        break;
+      }
+      LocalDate candidate = ym.atDay(Math.min(dom, ym.lengthOfMonth()));
+      if (!candidate.isBefore(winStart) && !candidate.isAfter(winEnd)) {
+        occurrences.add(candidate);
+      }
+      ym = ym.plusMonths(1);
+    }
+    return new ExpansionResult(occurrences, truncated);
   }
 
   /**
@@ -208,6 +241,15 @@ public class RecurrenceService {
       }
       if (dow < 0 || dow > 6) {
         throw new InvalidRecurrenceException("dueDayOfWeek must be in 0..6 (Sun..Sat)");
+      }
+    }
+    if (rule.getCycle() == RecurCycle.MONTHLY) {
+      Short dom = rule.getDueDayOfMonth();
+      if (dom == null) {
+        throw new InvalidRecurrenceException("MONTHLY cycle requires dueDayOfMonth");
+      }
+      if (dom < 1 || dom > 31) {
+        throw new InvalidRecurrenceException("dueDayOfMonth must be in 1..31");
       }
     }
   }
