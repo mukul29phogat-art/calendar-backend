@@ -272,6 +272,20 @@
           },
           "inviteParents" : {
             "type" : "boolean"
+          },
+          "attendeeUserIds" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string",
+              "format" : "uuid"
+            }
+          },
+          "studentIds" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string",
+              "format" : "uuid"
+            }
           }
         }
       },
@@ -333,6 +347,20 @@
           "updatedAt" : {
             "type" : "string",
             "format" : "date-time"
+          },
+          "attendeeUserIds" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string",
+              "format" : "uuid"
+            }
+          },
+          "studentIds" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string",
+              "format" : "uuid"
+            }
           },
           "softFlags" : {
             "type" : "array",

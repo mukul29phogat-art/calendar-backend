@@ -2,6 +2,7 @@ package com.childcarewow.calendar.event;
 
 import com.childcarewow.calendar.conflict.ConflictFlag;
 import java.util.List;
+import java.util.UUID;
 
 /**
  * Manual entity ↔ view mapper. We deliberately don't use MapStruct here despite the playbook's
@@ -13,7 +14,11 @@ final class EventMapper {
 
   private EventMapper() {}
 
-  static EventView toView(Event entity, List<ConflictFlag> activeFlags) {
+  static EventView toView(
+      Event entity,
+      List<UUID> attendeeUserIds,
+      List<UUID> studentIds,
+      List<ConflictFlag> activeFlags) {
     List<EventView.SoftFlagView> flagViews =
         activeFlags.stream()
             .map(
@@ -40,6 +45,8 @@ final class EventMapper {
         entity.getCreatedByUserId(),
         entity.getCreatedAt(),
         entity.getUpdatedAt(),
+        attendeeUserIds == null ? List.of() : attendeeUserIds,
+        studentIds == null ? List.of() : studentIds,
         flagViews);
   }
 }
