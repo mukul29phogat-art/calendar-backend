@@ -1,0 +1,12 @@
+# Default: let git auto-detect text vs binary
+* text=auto
+
+# Shell scripts must always be LF — required when these files are run inside
+# Linux containers (Dockerfile build stage). Without this, a Windows checkout
+# stores them with CRLF, and Alpine's /bin/sh fails to parse the shebang.
+mvnw text eol=lf
+*.sh text eol=lf
+
+# Windows-only scripts: keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf

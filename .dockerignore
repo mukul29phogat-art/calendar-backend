@@ -1,0 +1,32 @@
+# Maven build output
+target/
+
+# IDE / editor
+*.iml
+.idea/
+.vscode/
+.classpath
+.project
+.settings/
+
+# Git
+.git/
+.gitignore
+.gitattributes
+
+# Tooling configs not needed in build context
+.editorconfig
+.github/
+docs/
+infrastructure/
+docker/
+docker-compose.yml
+progress.md
+README.md
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Node (just in case)
+node_modules/
