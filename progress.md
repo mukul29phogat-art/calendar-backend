@@ -29,6 +29,53 @@ Next part: X.Y+1
 
 ---
 
+## Part 4.5 (Series 4) — Springdoc OpenAPI + CI snapshot drift check — STATUS: ✅ done · **CLOSES BACKEND SERIES 4**
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `pom.xml`: `+springdoc-openapi-starter-webmvc-ui:2.6.0`. Spring Boot autoconfigures `/v3/api-docs`, `/v3/api-docs/swagger-config`, `/swagger-ui/index.html`, etc.
+- `auth/SecurityConfig`: permits `/v3/api-docs/**`, `/swagger-ui/**`, `/swagger-ui.html` alongside the existing `/actuator/health` + `/actuator/info`. The api-docs endpoint was already in the permit list (added in Part 2.1); the swagger-ui paths are new for in-browser exploration.
+- `openapi/OpenApiSnapshotIT` — failsafe IT that:
+  1. Boots the full Spring context via `@SpringBootTest @AutoConfigureMockMvc`.
+  2. Fetches `/v3/api-docs`, parses with Jackson, sorts keys via `ORDER_MAP_ENTRIES_BY_KEYS`, pretty-prints.
+  3. Compares byte-for-byte to `docs/openapi.json`.
+  4. **First-run mode**: if the file doesn't exist, writes it and returns. Subsequent runs assert equality.
+  5. **Update mode**: `-Dopenapi.snapshot=update` OR `OPENAPI_SNAPSHOT=update` env rewrites the baseline. Both supported because Maven Surefire's system-property propagation is finicky and CLI users default to `-D` while CI ergonomics prefer env.
+  6. Smoke-test method `specHasExpectedTopLevelStructure` verifies all 7 Series-4 endpoints (`auth/me`, `users`, `schools`, `classrooms`, `students`, `whoami`, `attachments/sign-upload`) appear in the spec — catches "spec emits but routes vanished" failure mode.
+- `docs/openapi.json` — committed baseline, 10K bytes, Springdoc-generated, key-sorted via Jackson.
+
+Files changed (count: 4):
+- `pom.xml` — `+springdoc` dep.
+- `src/main/java/com/childcarewow/calendar/auth/SecurityConfig.java` — `+`3 swagger-ui paths to the permitAll list.
+- `src/test/java/com/childcarewow/calendar/openapi/OpenApiSnapshotIT.java` — new (2 tests).
+- `docs/openapi.json` — new (10K-byte baseline).
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 45s; bundle gate ≥80% line met.
+- [x] `OpenApiSnapshotIT` — 2/2 tests green:
+  - First run: writes `docs/openapi.json`, returns silently.
+  - Second run (after committing the baseline): asserts byte-for-byte equality, passes.
+  - Smoke test: all 7 expected endpoints present.
+- [x] CI green on PR #82 ([run 25518027493](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25518027493)).
+
+Notes / surprises:
+- **Departed from the playbook's `spring-boot:run` + curl approach.** The playbook spec wants CI to boot the running app and curl `/v3/api-docs`, but the running app needs `supabase-jwt-public-key.pem` from `src/test/resources` — only on the **test** classpath. Booting via `mvn spring-boot:run` against the main classpath fails with "public key location does not exist". Workarounds (test profile, env-var override, copying the key to main resources) all add their own complexity. The failsafe-IT path is cleaner: full Spring context, test classpath, two test methods, deterministic JSON normalization. Trade-off: ~10s overhead per CI run for the full context boot. Documented in the test's class Javadoc.
+- **Surefire system-property propagation isn't automatic.** `-Dopenapi.snapshot=update` on the Maven CLI does NOT necessarily reach the forked test JVM. Caught when the first `update` run fell through to the assertion path because the property was unset inside the fork. Worked around by also accepting the `OPENAPI_SNAPSHOT` environment variable, which IS forwarded to forks. Note for future snapshot-style tests: if you want CLI-only update workflow, configure `<systemPropertyVariables>` in surefire/failsafe.
+- **First-run-writes-baseline pattern** works well: avoids the boilerplate of a separate "create the file" command. The cost is that a malicious or accidental delete of `docs/openapi.json` would let the next CI run silently re-create it. Mitigation: the file lives in git; deletion would surface as a PR diff. Acceptable for v1.
+- **Springdoc operationIds** default to controller method names: `signUpload`, `list`, `me`. Series 6+ controllers should add `@Operation(operationId = ...)` if they want reader-friendly names in the FE-generated TS types — `list` collides with itself across multiple controllers. Springdoc handles the collision by appending suffixes (`list_1`, `list_2`...), but explicit names are cleaner.
+- **OpenAPI version 3.0.1** (Springdoc 2.6 default). Frontend Part 4.6 codegen needs to handle this version — `openapi-typescript@7+` does.
+
+Series 4 backend close:
+- **6 of 7 parts complete on the backend side** (4.0a, 4.1, 4.2, 4.3, 4.4, 4.5).
+- **Part 4.6** — Frontend codegen pipeline — lives in the **frontend repo** (Events_CCW). It will fetch this committed `docs/openapi.json` (or the live `/v3/api-docs` from a running dev backend) and regenerate `src/types/api.ts`. **Tracked here as a follow-up**; it doesn't block backend Series 5 (event/task write endpoints) which can proceed in parallel.
+- All Series-4 endpoints contracted: 7 routes (3 GET in auth, 4 GET in selectors, 1 POST sign-upload). The OpenAPI baseline pins their wire shape.
+- Total: **83 PRs merged**.
+
+Next part: **Series 5 — Events module backend** (Parts 5.1–5.7). Starts with **Part 5.1 — `EventsService.create` + `POST /api/v1/events`** wiring up the full create-event flow with `policyService.assertCan`, `idempotencyMiddleware`, `softFlagService.recomputeForEvent`, `auditService.log`, and `notificationService.dispatchEventCreated`.
+
+---
+
 ## Part 4.4 (Series 4) — `GET /api/v1/students` with `@AuditRead` (COPPA) — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
