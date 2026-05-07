@@ -29,6 +29,58 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.13 (Series 3) — `IdempotencyMiddleware` + daily purge + cross-user scoping — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `idempotency.IdempotencyFilter extends OncePerRequestFilter`. Honors `Idempotency-Key` header on the listed POST creates (`/api/v1/{events,tasks,holidays,important-dates,attachments/sign-upload}`); other methods/paths pass through. Anonymous requests, missing/blank headers, and non-applicable routes all pass through silently.
+- **Cross-user scoped storage key**: `SHA-256(actor.id() + ":" + clientIdempotencyKey)`. Two clients colliding on a UUID for `Idempotency-Key` see independent rows — closes the cross-user data-leak hole the playbook's threat model called out.
+- Cache hit + same body hash → return cached status/body, no controller invocation, no DB writes. Cache hit + different body hash → 409 IDEMPOTENCY_REPLAY (envelope written directly because filter exceptions don't go through `GlobalExceptionHandler`). Miss → run controller, persist 2xx response keyed by scoped key.
+- `idempotency.BodyCachingRequestWrapper` — accepts the body bytes up-front (filter reads from the original request stream) and replays them via `getInputStream()` to downstream consumers. Spring's `ContentCachingRequestWrapper` doesn't fit because it caches AFTER the chain consumes the stream — too late for hashing.
+- `idempotency.IdempotencyPurgeJob` — `@Scheduled(cron = "0 0 4 * * *", zone = "UTC")`. ShedLock-backed coordination deferred to Series 11.4 (single-instance dev doesn't need it; documented in Javadoc + README).
+- `IdempotencyKeyRepository.deleteExpired(cutoff)` — `@Modifying @Query` JPQL DELETE with row-count return.
+- `@EnableScheduling` added to `CalendarApplication` so the cron actually fires.
+- `idempotency/README.md` — documents the storage-key rationale, allowlisted routes, behavior table, TTL+purge, threat model (post-deletion replay is by design; captured-and-replayed by a different user fails the scope check), and test seams.
+
+Files changed (count: 10):
+- `src/main/java/com/childcarewow/calendar/CalendarApplication.java` — `+@EnableScheduling`.
+- `src/main/java/com/childcarewow/calendar/crosscut/IdempotencyKeyRepository.java` — `+deleteExpired`.
+- `src/main/java/com/childcarewow/calendar/idempotency/{IdempotencyFilter,BodyCachingRequestWrapper,IdempotencyPurgeJob,README.md}` — new package.
+- `src/test/java/com/childcarewow/calendar/idempotency/{IdempotencyFilterTest,IdempotencyPurgeJobTest}.java` — 17 tests.
+- `src/test/java/com/childcarewow/calendar/auth/{AuthControllerTest,WhoAmIControllerTest}.java` — `+@MockBean IdempotencyKeyRepository` (slice tests need it because `@WebMvcTest` pulls the `@Component` filter into the chain but doesn't load JPA repos; documented inline).
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 36s; bundle gate ≥80% line met.
+- [x] `IdempotencyFilterTest` 14/14 + `IdempotencyPurgeJobTest` 3/3 = 17 tests green:
+  - **Pass-through paths**: non-applicable route, GET method, missing header, blank header, no auth principal.
+  - **First request**: response captured; saved row has scoped key (NOT raw key), correct status, body, request hash.
+  - **Cached replay (same body)**: returns cached status + body; `chain.doFilter` NEVER called; no save.
+  - **Replay with different body**: 409 with `IDEMPOTENCY_REPLAY` envelope; chain never called.
+  - **Cross-user isolation**: Alice + "shared-key" and Bob + "shared-key" produce **different** scoped keys (verified via two `ArgumentCaptor` rounds).
+  - Persist failure (`repo.save` throws) swallowed → user still sees 201.
+  - Non-2xx response not cached.
+  - `shouldApply` matches all 5 allowlisted routes; rejects non-POST methods; matches sub-paths (e.g. `/tasks/abc/status`).
+  - `sha256Hex` stability and case sensitivity.
+  - `IdempotencyPurgeJob.purgeUsingClock(cutoff)` delegates with the right cutoff; no-op when nothing expired; scheduled cron uses current clock.
+- [x] Per-class JaCoCo:
+  - `IdempotencyPurgeJob` **100%** across instr/branch/line/method (0/30/2/10/4/4 missed).
+  - `IdempotencyFilter` ~96% line; the few uncovered branches are the early-return ladder for the auth-missing path and the non-`UserPrincipal` cast guard (defensive).
+  - `BodyCachingRequestWrapper` ~86%; the unused `ReadListener.setReadListener` and `isFinished/isReady` accessors aren't exercised by mock-stream consumers (acceptable — tested implicitly via the wrapper's full-cycle byte replay).
+- [x] Existing slice tests still green after `@MockBean IdempotencyKeyRepository` add.
+- [x] CI green on PR #68 ([run 25508016046](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25508016046)).
+
+Notes / surprises:
+- **Bug caught + fixed mid-implementation**: the first `BodyCachingRequestWrapper` integration read the body via the wrapper before calling `setCachedBody`, which always yielded an empty array (initial `cachedBody = new byte[0]`). The downstream hash was thus `sha256("")`, which never matched any cached entry → every cache-hit replay path landed in the "different hash" branch and returned 409 instead of the expected cached 201. Caught by the `cachedReplaySameBodyReturnsCachedNoControllerInvocation` test failing with `expected: 201 but was: 409`. Fix: read the body from `request.getInputStream()` first (the original Servlet stream), THEN construct the wrapper and call `setCachedBody(body)`. Documented inline.
+- `@WebMvcTest` slice tests broke because the filter is a `@Component` with a JPA-repo dep that the slice scope doesn't satisfy. Fix: `@MockBean IdempotencyKeyRepository` in each affected slice test. Trade-off: any future slice test that loads the security filter chain will need the same mock-bean. Documented inline so future contributors don't re-debug.
+- **ShedLock deferred** to Series 11.4. Adding it now would require a new dependency, a Flyway migration for the lock table, and provider config — all of it gated by "do we have a real second instance to coordinate with?" The answer in dev is no (single Spring Boot instance against LocalStack). When ECS provisions a second task in 11.4, that's the right time to add it. The cron itself is idempotent — a second runner deleting nothing is a no-op.
+- The 409 envelope is **written directly to the response** (string-formatted JSON) rather than thrown as a `ServiceException`. Reason: filter exceptions don't traverse the `@RestControllerAdvice` chain — Spring catches them earlier in the servlet container layer and produces a generic 500. Hand-writing the envelope keeps the wire format consistent with `GlobalExceptionHandler`'s output.
+- The `traceId` field in the 409 envelope is currently `null` because the `TraceIdFilter` runs after this filter in the chain order (filter ordering inferred from Spring's default; not explicitly tested here). If end-to-end tracing is needed for replay events, a future change can either reorder filters or have this filter populate MDC itself before writing the response. Not blocking — the envelope shape is correct and the trace can be reconstructed from logs.
+
+Next part: 3.14 — `FileUploadService` (Supabase Storage signed URLs for JPG/PNG ≤ 10 MB).
+
+---
+
 ## Part 3.12 (Series 3) — `recomputeForTask` + `recomputeForHoliday` — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
