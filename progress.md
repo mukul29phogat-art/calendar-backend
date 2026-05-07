@@ -29,6 +29,46 @@ Next part: X.Y+1
 
 ---
 
+## Part 4.2 (Series 4) — `GET /api/v1/schools` (school switcher) — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `auth/SchoolsController` — `GET /api/v1/schools`, authentication-only at the controller. The role-aware visibility scoping happens inside the service so the controller stays a thin pass-through.
+- `auth/SchoolsReadService.findVisibleTo(actor)`:
+  - **ORG_ADMIN** → every school in `actor.orgId` via `SELECT WHERE org_id = :orgId`.
+  - **SCHOOL_ADMIN / STAFF / PARENT** → only the schools in `actor.schoolIds()` via `SELECT WHERE id IN (:ids)`.
+  - Caffeine cache (1000-entry / 60s TTL) with **two key flavours**: `CacheKey.org(orgId)` for the first path, `CacheKey.ids(Set.copyOf(schoolIds))` for the second. Stops cross-actor collisions.
+- `auth/SchoolView(id, name, timezone)` — `timezone` is a plain `String`, NOT a `java.time.ZoneId` (Jackson serializes `ZoneId` as a JSON object, per playbook common-failure-points).
+- No new policy action: every authenticated user has SOME list of "their" schools (parents see schools their kids attend), so a separate policy gate would just duplicate the visibility logic.
+
+Files changed (count: 5, all new):
+- `src/main/java/com/childcarewow/calendar/auth/{SchoolsController,SchoolsReadService,SchoolView}.java`
+- `src/test/java/com/childcarewow/calendar/auth/{SchoolsReadServiceIT,SchoolsControllerTest}.java`
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m55s; bundle gate ≥80% line met.
+- [x] `SchoolsReadServiceIT` — 8/8 tests green against the real platform DB:
+  - ORG_ADMIN sees both seeded schools (Maplewood + Sunrise) sorted alphabetically with correct timezones (`America/Chicago` and `America/New_York`).
+  - SCHOOL_ADMIN, STAFF, PARENT each see only their assigned school (Sunrise).
+  - Multi-school parent (synthesized) sees both.
+  - Empty `schoolIds` → empty list.
+  - ORG_ADMIN with unknown `orgId` → empty list.
+  - Null actor → empty list.
+- [x] `SchoolsControllerTest` — 2/2 slice tests green: authenticated returns the full list with correct fields and `timezone` as a plain string; unauthenticated → 401.
+- [x] Per-class JaCoCo: `SchoolsController` **100%** (0/11 instr); `SchoolsReadService` **~99% line / 87% branch** (one uncovered branch is the defensive `null == schoolIds` guard — `UserPrincipal`'s compact constructor wraps in `Set.copyOf` so it can never trigger from the auth chain; only direct test instantiation could); `SchoolView` and `CacheKey` **100%**.
+- [x] CI green on PR #76 ([run 25515310071](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25515310071)).
+
+Notes / surprises:
+- **`CacheKey` two-flavour record** is the more interesting design choice. A single union-type cache key would have either two nullable fields (each path uses one and ignores the other) — which I went with — or required a sealed-interface hierarchy with two implementations. The record-with-nullable-fields wins because Java 21 records auto-generate the right `equals`/`hashCode` that compare both fields, so `CacheKey.org(orgA)` and `CacheKey.ids(Set.of(...))` are correctly unequal even though one of each pair has a null. The factory methods `org(...)` and `ids(...)` enforce the invariant that exactly one of the two fields is set; if a future maintainer adds a third query path they should add a third factory rather than pass both fields directly.
+- **Timezone-string contract** — the FE prototype's school switcher already treats timezone as opaque (just renders the name as an info pill on the school card). The string-based DTO matches that contract; if Series 5/6 calendar reads ever need to do timezone math FE-side, they should call `TimezoneService` server-side and surface only date-resolved data.
+- **No `@AuditRead` annotation** on the controller. Schools aren't COPPA-protected; auditing every school-switcher render would be noise. If a future security review wants visibility into "who switched to which school when", a `@Audited("SCHOOL_VIEWED")` per-call entry would be appropriate (it would record `target_id` = school ID, one row per request).
+- The `SQL_BY_IDS` query uses the JPQL-style `IN (:ids)` syntax, which `NamedParameterJdbcTemplate` expands to `IN (?, ?, ...)`. Postgres has no array-binding ambiguity here because the `ids` param is a Java `Set<UUID>` and Spring binds each element with the inferred UUID type. (Different from the `users.read` Postgres-can't-infer-null trap; here the type is fully determined.)
+
+Next part: 4.3 — `GET /api/v1/classrooms?schoolId=` (classroom selectors with `staffUserIds[]` populated; soft-deleted excluded).
+
+---
+
 ## Part 4.1 (Series 4) — `GET /api/v1/users` (assignee-selector endpoint) — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
