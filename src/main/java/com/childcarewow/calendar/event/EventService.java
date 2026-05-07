@@ -14,9 +14,11 @@ import jakarta.persistence.PersistenceContext;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -39,6 +41,7 @@ public class EventService {
   private final SoftFlagService softFlagService;
   private final NotificationService notificationService;
   private final JdbcTemplate calendarJdbc;
+  private final NamedParameterJdbcTemplate platformNamedJdbc;
 
   @PersistenceContext private EntityManager em;
 
@@ -48,13 +51,194 @@ public class EventService {
       PlatformEntityValidator platformValidator,
       SoftFlagService softFlagService,
       NotificationService notificationService,
-      @Qualifier("calendarJdbcTemplate") JdbcTemplate calendarJdbc) {
+      @Qualifier("calendarJdbcTemplate") JdbcTemplate calendarJdbc,
+      @Qualifier("platformNamedJdbcTemplate") NamedParameterJdbcTemplate platformNamedJdbc) {
     this.eventRepo = eventRepo;
     this.timezoneService = timezoneService;
     this.platformValidator = platformValidator;
     this.softFlagService = softFlagService;
     this.notificationService = notificationService;
     this.calendarJdbc = calendarJdbc;
+    this.platformNamedJdbc = platformNamedJdbc;
+  }
+
+  /** GET /events/{id} — applies the same role-aware visibility filter as the list endpoint. */
+  @Transactional(readOnly = true)
+  public EventView findById(UUID id, UserPrincipal actor) {
+    Event event =
+        eventRepo
+            .findById(id)
+            .filter(e -> e.getDeletedAt() == null)
+            .orElseThrow(
+                () -> new com.childcarewow.calendar.exception.NotFoundException("Event", id));
+    if (!isVisibleTo(event, actor)) {
+      // 404 (not 403) — don't leak existence of events the actor can't see.
+      throw new com.childcarewow.calendar.exception.NotFoundException("Event", id);
+    }
+    return toViewWithJoins(event);
+  }
+
+  /**
+   * GET /events?schoolId=&from=&to=&type= — calendar-window read with role-aware visibility.
+   * Returns events the actor is allowed to see. PARENT visibility additionally requires {@code
+   * inviteParents=true}, the actor's child to be in the event's scope, and the actor (and their
+   * children) to NOT be in {@code excludedParticipantIds}.
+   */
+  @Transactional(readOnly = true)
+  public List<EventView> findInWindow(
+      UUID schoolId,
+      java.time.OffsetDateTime from,
+      java.time.OffsetDateTime to,
+      EventType typeFilter,
+      UserPrincipal actor) {
+    if (schoolId == null || from == null || to == null) {
+      throw new ValidationException("scope", "schoolId, from, and to are required");
+    }
+    List<Event> raw = eventRepo.findInWindow(schoolId, from, to, typeFilter);
+    return raw.stream().filter(e -> isVisibleTo(e, actor)).map(this::toViewWithJoins).toList();
+  }
+
+  // -- visibility -------------------------------------------------------------
+
+  private boolean isVisibleTo(Event e, UserPrincipal actor) {
+    if (actor == null) {
+      return false;
+    }
+    return switch (actor.role()) {
+      case ORG_ADMIN -> actor.orgId().equals(e.getOrgId());
+      case SCHOOL_ADMIN -> actor.schoolIds().contains(e.getSchoolId());
+      case STAFF -> staffCanSee(e, actor);
+      case PARENT -> parentCanSee(e, actor);
+    };
+  }
+
+  private boolean staffCanSee(Event e, UserPrincipal actor) {
+    return switch (e.getType()) {
+      case SCHOOL -> actor.schoolIds().contains(e.getSchoolId());
+      case CLASSROOM ->
+          e.getClassroomId() != null && actor.classroomIds().contains(e.getClassroomId());
+      case CUSTOM -> {
+        if (actor.id().equals(e.getOrganizerUserId())) {
+          yield true;
+        }
+        yield loadAttendees(e.getId()).contains(actor.id());
+      }
+    };
+  }
+
+  private boolean parentCanSee(Event e, UserPrincipal actor) {
+    if (!e.isInviteParents()) {
+      return false;
+    }
+    // Excluded check: parent themselves OR any of their children in excludedParticipantIds.
+    var excluded = loadExclusions(e.getId());
+    if (excluded.userIds.contains(actor.id())) {
+      return false;
+    }
+    for (UUID childId : actor.childStudentIds()) {
+      if (excluded.studentIds.contains(childId)) {
+        return false;
+      }
+    }
+    // Child-in-scope check by event type.
+    return switch (e.getType()) {
+      case SCHOOL -> actor.schoolIds().contains(e.getSchoolId());
+      case CLASSROOM ->
+          e.getClassroomId() != null && parentChildInClassroom(actor, e.getClassroomId());
+      case CUSTOM -> {
+        Set<UUID> students = loadStudents(e.getId());
+        for (UUID childId : actor.childStudentIds()) {
+          if (students.contains(childId)) {
+            yield true;
+          }
+        }
+        yield false;
+      }
+    };
+  }
+
+  /**
+   * Direct platform-DB query: does any of {@code actor.childStudentIds()} have classroom_id =
+   * {@code classroomId}? Used by parent-classroom-event visibility.
+   */
+  private boolean parentChildInClassroom(UserPrincipal actor, UUID classroomId) {
+    if (actor.childStudentIds().isEmpty()) {
+      return false;
+    }
+    org.springframework.jdbc.core.namedparam.MapSqlParameterSource params =
+        new org.springframework.jdbc.core.namedparam.MapSqlParameterSource()
+            .addValue("ids", actor.childStudentIds())
+            .addValue("classroomId", classroomId);
+    Integer n =
+        platformNamedJdbc.queryForObject(
+            "SELECT COUNT(*) FROM students "
+                + "WHERE id IN (:ids) AND classroom_id = :classroomId AND deleted_at IS NULL",
+            params,
+            Integer.class);
+    return n != null && n > 0;
+  }
+
+  // -- join-table loaders + view builder -------------------------------------
+
+  private Set<UUID> loadAttendees(UUID eventId) {
+    return new java.util.HashSet<>(
+        calendarJdbc.query(
+            "SELECT user_id FROM event_attendees WHERE event_id = ?",
+            (rs, n) -> UUID.fromString(rs.getString(1)),
+            eventId));
+  }
+
+  private Set<UUID> loadStudents(UUID eventId) {
+    return new java.util.HashSet<>(
+        calendarJdbc.query(
+            "SELECT student_id FROM event_students WHERE event_id = ?",
+            (rs, n) -> UUID.fromString(rs.getString(1)),
+            eventId));
+  }
+
+  private record Exclusions(Set<UUID> userIds, Set<UUID> studentIds) {}
+
+  private Exclusions loadExclusions(UUID eventId) {
+    Set<UUID> users = new java.util.HashSet<>();
+    Set<UUID> students = new java.util.HashSet<>();
+    calendarJdbc.query(
+        "SELECT participant_id, participant_type FROM event_excluded_participants "
+            + "WHERE event_id = ?",
+        rs -> {
+          UUID id = UUID.fromString(rs.getString("participant_id"));
+          if ("USER".equals(rs.getString("participant_type"))) {
+            users.add(id);
+          } else {
+            students.add(id);
+          }
+        },
+        eventId);
+    return new Exclusions(users, students);
+  }
+
+  /** Reads the join tables and assembles an EventView for a single event. */
+  private EventView toViewWithJoins(Event e) {
+    List<UUID> attendees =
+        e.getType() == EventType.CUSTOM ? List.copyOf(loadAttendees(e.getId())) : List.of();
+    List<UUID> students =
+        e.getType() == EventType.CUSTOM ? List.copyOf(loadStudents(e.getId())) : List.of();
+    List<EventView.ExcludedParticipantView> exclusions = loadExcludedViews(e.getId());
+    return EventMapper.toView(
+        e,
+        attendees,
+        students,
+        exclusions,
+        softFlagService.findActiveByEntity(FlaggedEntity.EVENT, e.getId()));
+  }
+
+  private List<EventView.ExcludedParticipantView> loadExcludedViews(UUID eventId) {
+    return calendarJdbc.query(
+        "SELECT participant_id, participant_type FROM event_excluded_participants "
+            + "WHERE event_id = ?",
+        (rs, n) ->
+            new EventView.ExcludedParticipantView(
+                UUID.fromString(rs.getString("participant_id")), rs.getString("participant_type")),
+        eventId);
   }
 
   @Transactional
