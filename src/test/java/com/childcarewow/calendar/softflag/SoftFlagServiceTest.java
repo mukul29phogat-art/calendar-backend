@@ -1,0 +1,277 @@
+package com.childcarewow.calendar.softflag;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.times;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.when;
+
+import com.childcarewow.calendar.auth.Role;
+import com.childcarewow.calendar.auth.UserPrincipal;
+import com.childcarewow.calendar.conflict.ConflictFlag;
+import com.childcarewow.calendar.conflict.ConflictFlagRepository;
+import com.childcarewow.calendar.conflict.FlaggedEntity;
+import com.childcarewow.calendar.conflict.SoftFlagType;
+import com.childcarewow.calendar.exception.ForbiddenException;
+import com.childcarewow.calendar.exception.NotFoundException;
+import com.childcarewow.calendar.exception.ValidationException;
+import java.util.List;
+import java.util.Optional;
+import java.util.Set;
+import java.util.UUID;
+import org.junit.jupiter.api.Test;
+
+/**
+ * Pure unit tests for {@link SoftFlagService}: insert validation, find-active filtering,
+ * dismiss-idempotency, and the parent-actor guard.
+ */
+class SoftFlagServiceTest {
+
+  private static final UUID ORG = UUID.fromString("11111111-1111-1111-1111-111111111111");
+  private static final UUID SCHOOL = UUID.fromString("22222222-2222-2222-2222-222222222221");
+  private static final UUID ACTOR = UUID.fromString("33333333-0000-0000-0000-000000000001");
+
+  private final ConflictFlagRepository repo = mock(ConflictFlagRepository.class);
+  private final SoftFlagService service = new SoftFlagService(repo);
+
+  // -- insert -----------------------------------------------------------------
+
+  @Test
+  void insertPersistsValidFlag() {
+    when(repo.save(any(ConflictFlag.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    UUID eventId = UUID.randomUUID();
+    UUID otherEventId = UUID.randomUUID();
+    ConflictFlag saved =
+        service.insertFlag(
+            ORG,
+            SCHOOL,
+            FlaggedEntity.EVENT,
+            eventId,
+            SoftFlagType.DOUBLE_BOOKING,
+            otherEventId,
+            "Overlaps with another event");
+
+    assertThat(saved.getOrgId()).isEqualTo(ORG);
+    assertThat(saved.getSchoolId()).isEqualTo(SCHOOL);
+    assertThat(saved.getEntityType()).isEqualTo(FlaggedEntity.EVENT);
+    assertThat(saved.getEntityId()).isEqualTo(eventId);
+    assertThat(saved.getConflictType()).isEqualTo(SoftFlagType.DOUBLE_BOOKING);
+    assertThat(saved.getConflictingEntityId()).isEqualTo(otherEventId);
+    assertThat(saved.getMessage()).isEqualTo("Overlaps with another event");
+    assertThat(saved.isDismissed()).isFalse();
+  }
+
+  @Test
+  void insertAllowsHolidayFlagWithoutConflictingEntity() {
+    when(repo.save(any(ConflictFlag.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    UUID taskId = UUID.randomUUID();
+    ConflictFlag saved =
+        service.insertFlag(
+            ORG,
+            SCHOOL,
+            FlaggedEntity.TASK,
+            taskId,
+            SoftFlagType.HOLIDAY,
+            null,
+            "Falls on holiday");
+
+    assertThat(saved.getConflictingEntityId()).isNull();
+    assertThat(saved.getConflictType()).isEqualTo(SoftFlagType.HOLIDAY);
+  }
+
+  @Test
+  void insertRejectsMissingFields() {
+    assertThatThrownBy(
+            () ->
+                service.insertFlag(
+                    null,
+                    SCHOOL,
+                    FlaggedEntity.EVENT,
+                    UUID.randomUUID(),
+                    SoftFlagType.HOLIDAY,
+                    null,
+                    "msg"))
+        .isInstanceOf(ValidationException.class);
+    assertThatThrownBy(
+            () ->
+                service.insertFlag(
+                    ORG,
+                    null,
+                    FlaggedEntity.EVENT,
+                    UUID.randomUUID(),
+                    SoftFlagType.HOLIDAY,
+                    null,
+                    "msg"))
+        .isInstanceOf(ValidationException.class);
+    assertThatThrownBy(
+            () ->
+                service.insertFlag(
+                    ORG, SCHOOL, null, UUID.randomUUID(), SoftFlagType.HOLIDAY, null, "msg"))
+        .isInstanceOf(ValidationException.class);
+    assertThatThrownBy(
+            () ->
+                service.insertFlag(
+                    ORG, SCHOOL, FlaggedEntity.EVENT, null, SoftFlagType.HOLIDAY, null, "msg"))
+        .isInstanceOf(ValidationException.class);
+    assertThatThrownBy(
+            () ->
+                service.insertFlag(
+                    ORG, SCHOOL, FlaggedEntity.EVENT, UUID.randomUUID(), null, null, "msg"))
+        .isInstanceOf(ValidationException.class);
+    assertThatThrownBy(
+            () ->
+                service.insertFlag(
+                    ORG,
+                    SCHOOL,
+                    FlaggedEntity.EVENT,
+                    UUID.randomUUID(),
+                    SoftFlagType.HOLIDAY,
+                    null,
+                    null))
+        .isInstanceOf(ValidationException.class);
+    assertThatThrownBy(
+            () ->
+                service.insertFlag(
+                    ORG,
+                    SCHOOL,
+                    FlaggedEntity.EVENT,
+                    UUID.randomUUID(),
+                    SoftFlagType.HOLIDAY,
+                    null,
+                    "  "))
+        .isInstanceOf(ValidationException.class);
+    verify(repo, never()).save(any());
+  }
+
+  // -- findActive -------------------------------------------------------------
+
+  @Test
+  void findActiveDelegatesToRepo() {
+    UUID entityId = UUID.randomUUID();
+    ConflictFlag a = new ConflictFlag();
+    ConflictFlag b = new ConflictFlag();
+    when(repo.findByEntityTypeAndEntityIdAndDismissedFalse(eq(FlaggedEntity.EVENT), eq(entityId)))
+        .thenReturn(List.of(a, b));
+
+    List<ConflictFlag> result = service.findActiveByEntity(FlaggedEntity.EVENT, entityId);
+    assertThat(result).containsExactly(a, b);
+  }
+
+  @Test
+  void findActiveEmptyWhenNoFlags() {
+    UUID entityId = UUID.randomUUID();
+    when(repo.findByEntityTypeAndEntityIdAndDismissedFalse(eq(FlaggedEntity.TASK), eq(entityId)))
+        .thenReturn(List.of());
+    assertThat(service.findActiveByEntity(FlaggedEntity.TASK, entityId)).isEmpty();
+  }
+
+  // -- dismiss ----------------------------------------------------------------
+
+  @Test
+  void dismissMarksAndStamps() {
+    UUID flagId = UUID.randomUUID();
+    ConflictFlag flag = new ConflictFlag();
+    flag.setId(flagId);
+    flag.setDismissed(false);
+    when(repo.findById(eq(flagId))).thenReturn(Optional.of(flag));
+    when(repo.save(eq(flag))).thenReturn(flag);
+
+    UserPrincipal admin =
+        new UserPrincipal(
+            ACTOR,
+            "Admin",
+            "admin@ccw.test",
+            Role.ORG_ADMIN,
+            ORG,
+            Set.of(),
+            Set.of(),
+            Set.of(),
+            null);
+
+    ConflictFlag dismissed = service.dismiss(flagId, admin);
+    assertThat(dismissed.isDismissed()).isTrue();
+    assertThat(dismissed.getDismissedByUserId()).isEqualTo(ACTOR);
+    assertThat(dismissed.getDismissedAt()).isNotNull();
+    verify(repo, times(1)).save(flag);
+  }
+
+  @Test
+  void dismissIsIdempotent() {
+    UUID flagId = UUID.randomUUID();
+    ConflictFlag already = new ConflictFlag();
+    already.setId(flagId);
+    already.setDismissed(true);
+    UUID originalDismisser = UUID.fromString("99999999-9999-9999-9999-999999999999");
+    already.setDismissedByUserId(originalDismisser);
+    when(repo.findById(eq(flagId))).thenReturn(Optional.of(already));
+
+    UserPrincipal staff =
+        new UserPrincipal(
+            ACTOR,
+            "Staff",
+            "staff@ccw.test",
+            Role.STAFF,
+            ORG,
+            Set.of(SCHOOL),
+            Set.of(),
+            Set.of(),
+            null);
+
+    ConflictFlag result = service.dismiss(flagId, staff);
+    assertThat(result.isDismissed()).isTrue();
+    assertThat(result.getDismissedByUserId())
+        .as("idempotent: original dismisser preserved")
+        .isEqualTo(originalDismisser);
+    verify(repo, never()).save(any()); // no second save
+  }
+
+  @Test
+  void dismissThrowsForUnknownFlag() {
+    UUID flagId = UUID.randomUUID();
+    when(repo.findById(eq(flagId))).thenReturn(Optional.empty());
+    UserPrincipal admin =
+        new UserPrincipal(
+            ACTOR,
+            "Admin",
+            "admin@ccw.test",
+            Role.ORG_ADMIN,
+            ORG,
+            Set.of(),
+            Set.of(),
+            Set.of(),
+            null);
+    assertThatThrownBy(() -> service.dismiss(flagId, admin)).isInstanceOf(NotFoundException.class);
+  }
+
+  @Test
+  void dismissForbiddenForParent() {
+    UUID flagId = UUID.randomUUID();
+    UserPrincipal parent =
+        new UserPrincipal(
+            ACTOR,
+            "Parent",
+            "parent@ccw.test",
+            Role.PARENT,
+            ORG,
+            Set.of(SCHOOL),
+            Set.of(),
+            Set.of(),
+            null);
+    assertThatThrownBy(() -> service.dismiss(flagId, parent))
+        .isInstanceOf(ForbiddenException.class);
+    verify(repo, never()).findById(any());
+  }
+
+  @Test
+  void dismissForbiddenForNullActor() {
+    UUID flagId = UUID.randomUUID();
+    assertThatThrownBy(() -> service.dismiss(flagId, null)).isInstanceOf(ForbiddenException.class);
+    verify(repo, never()).findById(any());
+  }
+}
