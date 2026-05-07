@@ -102,6 +102,11 @@ class PolicyServiceImplTest {
     "SCHOOL_ADMIN, notifications.see,        true",
     "STAFF,        notifications.see,        true",
     "PARENT,       notifications.see,        true",
+    // users.read — non-PARENT (Series 4)
+    "ORG_ADMIN,    users.read,               true",
+    "SCHOOL_ADMIN, users.read,               true",
+    "STAFF,        users.read,               true",
+    "PARENT,       users.read,               false",
   })
   void resourceLessActions(String roleName, String action, boolean expected) {
     UserPrincipal actor = principal(Role.valueOf(roleName), Set.of(SCHOOL_IN), Set.of());

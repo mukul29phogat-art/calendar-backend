@@ -9,6 +9,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 
 @Configuration
 public class DatasourceConfig {
@@ -48,5 +49,17 @@ public class DatasourceConfig {
   @Bean(name = "platformJdbcTemplate")
   JdbcTemplate platformJdbcTemplate(@Qualifier("platformDataSource") DataSource ds) {
     return new JdbcTemplate(ds);
+  }
+
+  /**
+   * Named-parameter wrapper around the platform JdbcTemplate. Preferred over positional {@code ?}
+   * for queries with optional filters (Part 4.1's {@code (:role IS NULL OR u.role = :role)}
+   * pattern) — positional binds would require duplicate {@code ?} parameters and risk the
+   * bind-twice bug.
+   */
+  @Bean(name = "platformNamedJdbcTemplate")
+  NamedParameterJdbcTemplate platformNamedJdbcTemplate(
+      @Qualifier("platformJdbcTemplate") JdbcTemplate jdbc) {
+    return new NamedParameterJdbcTemplate(jdbc);
   }
 }

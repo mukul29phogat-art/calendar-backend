@@ -16,7 +16,7 @@ import com.childcarewow.calendar.task.Task;
  *       task.view}, {@code task.create}, {@code task.viewAllScope}, {@code holiday.manage}, {@code
  *       holiday.approve}, {@code importantDate.manage}, {@code calendar.softFlag.see}, {@code
  *       addMenu.show}, {@code addMenu.event}, {@code addMenu.task}, {@code addMenu.holiday}, {@code
- *       addMenu.importantDate}, {@code notifications.see}.
+ *       addMenu.importantDate}, {@code notifications.see}, {@code users.read}.
  *   <li><b>Resource-bearing (Event):</b> {@code event.edit}, {@code event.delete}.
  *   <li><b>Resource-bearing (Task):</b> {@code task.edit}, {@code task.delete}.
  * </ul>

@@ -46,6 +46,10 @@ public class PolicyServiceImpl implements PolicyService {
         // staff/admins see everything they're entitled to per their other actions)
       case "notifications.see" -> true;
 
+        // Read access to the user list (assignee selectors). Parents excluded — their UI
+        // doesn't surface a user picker and listing other parents would be a privacy leak.
+      case "users.read" -> nonParent(actor);
+
       default -> false;
     };
   }
