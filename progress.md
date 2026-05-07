@@ -29,6 +29,43 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.5 (Series 3) — `TimezoneService` (Caffeine + DST correctness) — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `timezone.TimezoneService` (Spring `@Service`):
+  - `zoneFor(UUID schoolId)` → `ZoneId`. Caffeine-cached (`maximumSize=10_000`, `expireAfterWrite=1h`). Reads `SELECT timezone FROM schools WHERE id=?` against the platform DB via `platformJdbcTemplate`. Cache hit/miss counters at `timezone_service_cache_{hits,misses}`.
+  - `toSchoolLocalDate(Instant, UUID)` → `LocalDate`. Implementation is one line: `instant.atZone(zoneFor(id)).toLocalDate()` — DST-correct because `Instant` is unambiguous and `atZone` applies the zone's rules.
+  - `isHolidayForSchool(UUID, LocalDate)` → `boolean`. Queries calendar DB for `approved=true AND deleted_at IS NULL`. Not cached (request pattern is unknown until prod traffic; revisit in Series 11 if hot).
+- `timezone.UnknownSchoolTimezoneException extends NotFoundException` (HTTP 404). The cause (e.g. `DateTimeException` for malformed IANA) is logged at WARN inside the service rather than carried on the exception, because `NotFoundException`'s constructor doesn't accept a cause and using `initCause()` from the subclass constructor trips `-Werror`'s "this-escape" warning.
+
+Files changed (count: 3, all new):
+- `src/main/java/com/childcarewow/calendar/timezone/{TimezoneService,UnknownSchoolTimezoneException}.java`
+- `src/test/java/com/childcarewow/calendar/timezone/TimezoneServiceIT.java`
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m30s; bundle gate ≥80% line met.
+- [x] `TimezoneServiceIT` — 7/7 tests green:
+  - Sunrise → `America/New_York`, Maplewood → `America/Chicago`.
+  - Cache hit/miss counters increment.
+  - **DST fall-back in NY**: 2026-11-01 05:30Z (1:30 AM EDT) and 06:30Z (1:30 AM EST, after fall-back) both → `LocalDate 2026-11-01`.
+  - **Different zones, same Instant**: 2026-06-15 04:00Z → NY = June 15, Chicago = June 14.
+  - Approved holiday recognized; pending federal holiday (`approved=false`) does NOT count.
+  - Unknown school → `UnknownSchoolTimezoneException`.
+- [x] Per-class JaCoCo: `TimezoneService` 76% line; uncovered branches are the platform-DB-unreachable path (`DataAccessResourceFailureException` → `PlatformUnavailableException`) and the malformed-IANA path. Both require fault injection — Series 11 chaos tests will cover them. Documented in the service's Javadoc.
+- [x] CI green on PR #52 ([run 25501790980](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25501790980)).
+
+Notes / surprises:
+- **Multi-catch can't list a class and its subclass.** First impl had `catch (ZoneRulesException | DateTimeException ex)` — `ZoneRulesException` is a subclass of `DateTimeException`. Compiler error, fixed by catching `DateTimeException` only (which covers both).
+- **`-Werror` "this-escape" warning on `initCause(cause)` in subclass constructor.** `NotFoundException`'s only constructor is `(String entity, UUID id)` — no cause overload. Using `initCause()` from `UnknownSchoolTimezoneException`'s constructor triggers the "possible 'this' escape before subclass is fully initialized" warning under `-Werror`. Resolution: drop the cause from the exception (it's logged at WARN inside the service, so the stack trace lives in logs); document the trade-off in the exception's Javadoc. Adding a `(String, UUID, Throwable)` overload to `NotFoundException` is an option for a future refactor.
+- The `SUNRISE` school's `America/New_York` IANA name in the seed is what makes the DST-boundary test deterministic — if the seed timezone changes, the test instants need to move with it.
+- Holiday lookup uses raw `JdbcTemplate` (not the JPA `HolidayRepository`) because the playbook spec is JdbcTemplate-shaped and we don't need entity hydration here. The repository will be the read path for the holiday CRUD endpoints later in Series 5.
+
+Next part: 3.6 — `RecurrenceService` skeleton + DAILY occurrence expansion (cap 1000 per call, `expansion_truncated=true` flag for malformed rules, validate `untilDate >= dueDate` and ≤ +5 years).
+
+---
+
 ## Part 3.4 (Series 3) — AuditEvent `@Immutable` + CI grep guard + immutability doc — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
