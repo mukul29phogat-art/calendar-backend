@@ -29,6 +29,36 @@ Next part: X.Y+1
 
 ---
 
+## Part 1.5 (Series 1) — V6 conflict_flags (bidirectional) — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `V6__conflict_flags.sql`: TEXT+CHECK `entity_type` (EVENT/TASK) + `conflict_type` (HOLIDAY/DOUBLE_BOOKING/RESOURCE). `entity_id`/`conflicting_entity_id` are bare UUID (polymorphic refs to events/tasks/holidays — real FKs not possible). Two partial indexes: `idx_conflict_flags_entity` (predicate WHERE dismissed=false), `idx_conflict_flags_holiday` (predicate WHERE conflict_type='HOLIDAY').
+- **Bidirectional invariant** for DOUBLE_BOOKING is service-layer-enforced (architecture spec §7.3) — DDL allows two rows; SoftFlagService inserts both A→B and B→A.
+- `SoftFlagType` + `FlaggedEntity` enums, `ConflictFlag` entity, `ConflictFlagRepository` with custom finder `findByEntityTypeAndEntityIdAndDismissedFalse` (mirrors the partial-index predicate; Spring Data derives the JPQL).
+- `ConflictFlagRepositoryIT` (3 tests):
+  - `roundTripsDoubleBookingPair` — A→B + B→A both round-trippable
+  - `roundTripsHolidayFlag` — exhaustive incl. dismissed metadata
+  - `dismissedFlagsExcludedFromActiveFinder` — proves the partial-index predicate matches the repo's derived query
+
+Files changed (count: 6, all new):
+- `src/main/resources/db/migration/V6__conflict_flags.sql`
+- `src/main/java/com/childcarewow/calendar/conflict/{SoftFlagType, FlaggedEntity, ConflictFlag, ConflictFlagRepository}.java`
+- `src/test/java/com/childcarewow/calendar/conflict/ConflictFlagRepositoryIT.java`
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS first try
+- [x] 18 classes analyzed, all gates met
+- [x] CI on PR #29: green
+- [x] Custom finder works (Spring Data derives `WHERE entityType=? AND entityId=? AND dismissed=false` from method name)
+
+Notes / surprises: none. Pattern stable.
+
+Next part: **Part 1.6 (Series 1) — V7 notifications + recipients + reads + deliveries**.
+
+---
+
 ## Part 1.4 (Series 1) — V5 important_dates — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
