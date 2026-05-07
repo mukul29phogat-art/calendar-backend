@@ -31,4 +31,27 @@ public interface ConflictFlagRepository extends JpaRepository<ConflictFlag, UUID
           + "AND c.conflictType = com.childcarewow.calendar.conflict.SoftFlagType.DOUBLE_BOOKING "
           + "AND (c.entityId = :eventId OR c.conflictingEntityId = :eventId)")
   int deleteDoubleBookingFlagsForEvent(@Param("eventId") UUID eventId);
+
+  /** Same idea as the event variant, scoped to TASK entities. Used by {@code recomputeForTask}. */
+  @Modifying
+  @Transactional
+  @Query(
+      "DELETE FROM ConflictFlag c "
+          + "WHERE c.entityType = com.childcarewow.calendar.conflict.FlaggedEntity.TASK "
+          + "AND c.conflictType = com.childcarewow.calendar.conflict.SoftFlagType.DOUBLE_BOOKING "
+          + "AND (c.entityId = :taskId OR c.conflictingEntityId = :taskId)")
+  int deleteDoubleBookingFlagsForTask(@Param("taskId") UUID taskId);
+
+  /**
+   * Hard-clears every {@code HOLIDAY} flag pointing at the holiday via {@code
+   * conflicting_entity_id}. Per the playbook's common-failure-points: the HOLIDAY flag's {@code
+   * entity_id} is the event/task, not the holiday — so we filter on {@code conflicting_entity_id}.
+   */
+  @Modifying
+  @Transactional
+  @Query(
+      "DELETE FROM ConflictFlag c "
+          + "WHERE c.conflictType = com.childcarewow.calendar.conflict.SoftFlagType.HOLIDAY "
+          + "AND c.conflictingEntityId = :holidayId")
+  int deleteHolidayFlagsForHoliday(@Param("holidayId") UUID holidayId);
 }

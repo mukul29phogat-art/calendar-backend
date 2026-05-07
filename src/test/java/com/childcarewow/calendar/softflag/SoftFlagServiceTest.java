@@ -22,6 +22,13 @@ import com.childcarewow.calendar.event.EventType;
 import com.childcarewow.calendar.exception.ForbiddenException;
 import com.childcarewow.calendar.exception.NotFoundException;
 import com.childcarewow.calendar.exception.ValidationException;
+import com.childcarewow.calendar.holiday.Holiday;
+import com.childcarewow.calendar.holiday.HolidaySource;
+import com.childcarewow.calendar.task.Task;
+import com.childcarewow.calendar.task.TaskRepository;
+import com.childcarewow.calendar.task.TaskStatus;
+import java.time.LocalDate;
+import java.time.LocalTime;
 import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
@@ -42,7 +49,8 @@ class SoftFlagServiceTest {
 
   private final ConflictFlagRepository repo = mock(ConflictFlagRepository.class);
   private final EventRepository eventRepo = mock(EventRepository.class);
-  private final SoftFlagService service = new SoftFlagService(repo, eventRepo);
+  private final TaskRepository taskRepo = mock(TaskRepository.class);
+  private final SoftFlagService service = new SoftFlagService(repo, eventRepo, taskRepo);
 
   // -- insert -----------------------------------------------------------------
 
@@ -390,6 +398,196 @@ class SoftFlagServiceTest {
     verify(repo).deleteDoubleBookingFlagsForEvent(eventId);
   }
 
+  // -- recomputeForTask -------------------------------------------------------
+
+  @Test
+  void recomputeForTaskWritesBidirectionalPairForOverlap() {
+    UUID taskId = UUID.randomUUID();
+    UUID otherId = UUID.randomUUID();
+    Task a = task(taskId, "Task A", LocalTime.of(9, 0), TaskStatus.TODO);
+    Task b = task(otherId, "Task B", LocalTime.of(9, 30), TaskStatus.TODO);
+    when(taskRepo.findById(eq(taskId))).thenReturn(Optional.of(a));
+    when(taskRepo.findOverlapCandidates(any(), any(), any(), any())).thenReturn(List.of(b));
+    when(repo.save(any(ConflictFlag.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    service.recomputeForTask(taskId);
+
+    verify(repo).deleteDoubleBookingFlagsForTask(taskId);
+    ArgumentCaptor<ConflictFlag> cap = ArgumentCaptor.forClass(ConflictFlag.class);
+    verify(repo, times(2)).save(cap.capture());
+    List<ConflictFlag> saved = cap.getAllValues();
+
+    assertThat(saved.get(0).getEntityType()).isEqualTo(FlaggedEntity.TASK);
+    assertThat(saved.get(0).getEntityId()).isEqualTo(taskId);
+    assertThat(saved.get(0).getConflictingEntityId()).isEqualTo(otherId);
+    assertThat(saved.get(0).getMessage()).contains("Task B");
+    assertThat(saved.get(1).getEntityId()).isEqualTo(otherId);
+    assertThat(saved.get(1).getConflictingEntityId()).isEqualTo(taskId);
+  }
+
+  @Test
+  void recomputeForTaskBothDueTimesNullCountsAsConflict() {
+    UUID taskId = UUID.randomUUID();
+    Task a = task(taskId, "A", null, TaskStatus.TODO);
+    Task b = task(UUID.randomUUID(), "B", null, TaskStatus.TODO);
+    when(taskRepo.findById(eq(taskId))).thenReturn(Optional.of(a));
+    when(taskRepo.findOverlapCandidates(any(), any(), any(), any())).thenReturn(List.of(b));
+
+    service.recomputeForTask(taskId);
+    verify(repo, times(2)).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeForTaskOneTimeNullDoesNotConflict() {
+    UUID taskId = UUID.randomUUID();
+    Task a = task(taskId, "A", LocalTime.of(9, 0), TaskStatus.TODO);
+    Task b = task(UUID.randomUUID(), "B", null, TaskStatus.TODO);
+    when(taskRepo.findById(eq(taskId))).thenReturn(Optional.of(a));
+    when(taskRepo.findOverlapCandidates(any(), any(), any(), any())).thenReturn(List.of(b));
+
+    service.recomputeForTask(taskId);
+    verify(repo, never()).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeForTaskSubjectNullOtherSetDoesNotConflict() {
+    // Symmetric of the above: covers the second branch of (a == null || b == null).
+    UUID taskId = UUID.randomUUID();
+    Task a = task(taskId, "A", null, TaskStatus.TODO);
+    Task b = task(UUID.randomUUID(), "B", LocalTime.of(9, 0), TaskStatus.TODO);
+    when(taskRepo.findById(eq(taskId))).thenReturn(Optional.of(a));
+    when(taskRepo.findOverlapCandidates(any(), any(), any(), any())).thenReturn(List.of(b));
+
+    service.recomputeForTask(taskId);
+    verify(repo, never()).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeForTaskOutsideTwoHourWindowDoesNotConflict() {
+    UUID taskId = UUID.randomUUID();
+    Task a = task(taskId, "A", LocalTime.of(9, 0), TaskStatus.TODO);
+    Task b =
+        task(UUID.randomUUID(), "B", LocalTime.of(13, 0), TaskStatus.TODO); // 4h away → no conflict
+    when(taskRepo.findById(eq(taskId))).thenReturn(Optional.of(a));
+    when(taskRepo.findOverlapCandidates(any(), any(), any(), any())).thenReturn(List.of(b));
+
+    service.recomputeForTask(taskId);
+    verify(repo, never()).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeForTaskExactlyTwoHoursIsConflict() {
+    UUID taskId = UUID.randomUUID();
+    Task a = task(taskId, "A", LocalTime.of(9, 0), TaskStatus.TODO);
+    Task b = task(UUID.randomUUID(), "B", LocalTime.of(11, 0), TaskStatus.TODO); // exactly 120 min
+    when(taskRepo.findById(eq(taskId))).thenReturn(Optional.of(a));
+    when(taskRepo.findOverlapCandidates(any(), any(), any(), any())).thenReturn(List.of(b));
+
+    service.recomputeForTask(taskId);
+    verify(repo, times(2)).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeForTaskOnSoftDeletedTaskOnlyClears() {
+    UUID taskId = UUID.randomUUID();
+    Task a = task(taskId, "Deleted", LocalTime.of(9, 0), TaskStatus.TODO);
+    a.setDeletedAt(OffsetDateTime.now());
+    when(taskRepo.findById(eq(taskId))).thenReturn(Optional.of(a));
+
+    service.recomputeForTask(taskId);
+
+    verify(repo).deleteDoubleBookingFlagsForTask(taskId);
+    verify(taskRepo, never()).findOverlapCandidates(any(), any(), any(), any());
+    verify(repo, never()).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeForTaskWhenSubjectDoneOnlyClears() {
+    UUID taskId = UUID.randomUUID();
+    Task a = task(taskId, "Done", LocalTime.of(9, 0), TaskStatus.DONE);
+    when(taskRepo.findById(eq(taskId))).thenReturn(Optional.of(a));
+
+    service.recomputeForTask(taskId);
+
+    verify(repo).deleteDoubleBookingFlagsForTask(taskId);
+    verify(taskRepo, never()).findOverlapCandidates(any(), any(), any(), any());
+    verify(repo, never()).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeForTaskThrowsForUnknown() {
+    UUID taskId = UUID.randomUUID();
+    when(taskRepo.findById(eq(taskId))).thenReturn(Optional.empty());
+    assertThatThrownBy(() -> service.recomputeForTask(taskId))
+        .isInstanceOf(NotFoundException.class);
+    verify(repo, never()).deleteDoubleBookingFlagsForTask(any());
+  }
+
+  @Test
+  void removeFlagsForTaskDelegatesToRepo() {
+    UUID taskId = UUID.randomUUID();
+    service.removeFlagsForTask(taskId);
+    verify(repo).deleteDoubleBookingFlagsForTask(taskId);
+  }
+
+  // -- recomputeForHoliday ----------------------------------------------------
+
+  @Test
+  void recomputeForHolidayPaintsEventsAndTasks() {
+    Holiday h = holiday(true);
+    Event e1 = event(UUID.randomUUID(), "Event 1");
+    Event e2 = event(UUID.randomUUID(), "Event 2");
+    Task t1 = task(UUID.randomUUID(), "Task 1", null, TaskStatus.TODO);
+    when(eventRepo.findBySchoolAndDate(eq(h.getSchoolId()), eq(h.getDate())))
+        .thenReturn(List.of(e1, e2));
+    when(taskRepo.findBySchoolIdAndDueDateAndDeletedAtIsNull(eq(h.getSchoolId()), eq(h.getDate())))
+        .thenReturn(List.of(t1));
+
+    service.recomputeForHoliday(h);
+
+    verify(repo).deleteHolidayFlagsForHoliday(h.getId());
+    ArgumentCaptor<ConflictFlag> cap = ArgumentCaptor.forClass(ConflictFlag.class);
+    verify(repo, times(3)).save(cap.capture()); // 2 events + 1 task
+    List<ConflictFlag> saved = cap.getAllValues();
+    assertThat(saved)
+        .allSatisfy(f -> assertThat(f.getConflictType()).isEqualTo(SoftFlagType.HOLIDAY));
+    assertThat(saved).allSatisfy(f -> assertThat(f.getConflictingEntityId()).isEqualTo(h.getId()));
+    assertThat(saved).allSatisfy(f -> assertThat(f.getMessage()).contains("Memorial Day"));
+  }
+
+  @Test
+  void recomputeForHolidayUnapprovedClearsButPaintsNothing() {
+    Holiday h = holiday(false);
+
+    service.recomputeForHoliday(h);
+
+    verify(repo).deleteHolidayFlagsForHoliday(h.getId());
+    verify(eventRepo, never()).findBySchoolAndDate(any(), any());
+    verify(taskRepo, never()).findBySchoolIdAndDueDateAndDeletedAtIsNull(any(), any());
+    verify(repo, never()).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeForHolidayWithNoMatchingEntitiesClearsButPaintsNothing() {
+    Holiday h = holiday(true);
+    when(eventRepo.findBySchoolAndDate(any(), any())).thenReturn(List.of());
+    when(taskRepo.findBySchoolIdAndDueDateAndDeletedAtIsNull(any(), any())).thenReturn(List.of());
+
+    service.recomputeForHoliday(h);
+
+    verify(repo).deleteHolidayFlagsForHoliday(h.getId());
+    verify(repo, never()).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeForHolidayRejectsNullOrUnpersisted() {
+    assertThatThrownBy(() -> service.recomputeForHoliday(null))
+        .isInstanceOf(ValidationException.class);
+    Holiday transientHoliday = new Holiday();
+    assertThatThrownBy(() -> service.recomputeForHoliday(transientHoliday))
+        .isInstanceOf(ValidationException.class);
+  }
+
   // -- helpers ----------------------------------------------------------------
 
   private static Event event(UUID id, String title) {
@@ -404,5 +602,32 @@ class SoftFlagServiceTest {
     e.setOrganizerUserId(ACTOR);
     e.setCreatedByUserId(ACTOR);
     return e;
+  }
+
+  private static Task task(UUID id, String title, LocalTime dueTime, TaskStatus status) {
+    Task t = new Task();
+    t.setId(id);
+    t.setOrgId(ORG);
+    t.setSchoolId(SCHOOL);
+    t.setTitle(title);
+    t.setAssigneeUserId(ACTOR);
+    t.setDueDate(LocalDate.of(2026, 6, 1));
+    t.setDueTime(dueTime);
+    t.setStatus(status);
+    t.setCreatedByUserId(ACTOR);
+    return t;
+  }
+
+  private static Holiday holiday(boolean approved) {
+    Holiday h = new Holiday();
+    h.setId(UUID.fromString("77777777-7777-7777-7777-777777777777"));
+    h.setOrgId(ORG);
+    h.setSchoolId(SCHOOL);
+    h.setDate(LocalDate.of(2026, 5, 25));
+    h.setName("Memorial Day");
+    h.setSource(HolidaySource.FEDERAL);
+    h.setApproved(approved);
+    h.setCreatedByUserId(ACTOR);
+    return h;
   }
 }

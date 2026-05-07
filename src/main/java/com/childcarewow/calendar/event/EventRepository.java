@@ -37,4 +37,18 @@ public interface EventRepository extends JpaRepository<Event, UUID> {
       @Param("endDt") OffsetDateTime endDt,
       @Param("classroomId") UUID classroomId,
       @Param("organizerUserId") UUID organizerUserId);
+
+  /**
+   * Returns non-deleted events whose {@code start_dt} (UTC) falls on the given calendar date. Used
+   * by the holiday-paint hook (HOLIDAY soft-flag) — the flag is approximate by design (the event's
+   * school-local date may differ from its UTC date by a few hours), so a small false-match in the
+   * cross-timezone case is acceptable.
+   */
+  @Query(
+      "SELECT e FROM Event e "
+          + "WHERE e.schoolId = :schoolId "
+          + "AND FUNCTION('DATE', e.startDt) = :date "
+          + "AND e.deletedAt IS NULL")
+  List<Event> findBySchoolAndDate(
+      @Param("schoolId") UUID schoolId, @Param("date") java.time.LocalDate date);
 }
