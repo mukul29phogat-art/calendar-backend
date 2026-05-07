@@ -29,6 +29,46 @@ Next part: X.Y+1
 
 ---
 
+## Part 1.2 (Series 1) — V3 recurrence_rules + tasks + task_instance_overrides — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `V3__tasks.sql`: 3 tables, 5 CHECK constraints on tasks/recurrence_rules.
+  - `recurrence_rules` (8 cols): TEXT+CHECK `cycle` (DAILY/WEEKLY/MONTHLY), range CHECKs on `due_day_of_week` (0-6, JS Date.getDay convention) and `due_day_of_month` (1-31), `chk_weekly_dow` + `chk_monthly_dom` enforcing required-day-by-cycle.
+  - `tasks` (18 cols): TEXT+CHECK `status` (TODO/IN_PROGRESS/DONE — **NOT 'COMPLETED'**, matches prototype) defaulting to TODO; TEXT+CHECK `priority` (LOW/MEDIUM/HIGH) defaulting to MEDIUM; `recurrence_id uuid REFERENCES recurrence_rules(id)` (calendar-owned real FK per D11); 4 partial indexes (school+assignee, school+due_date, school+status, parent_task_group_id).
+  - `task_instance_overrides`: `task_id uuid NOT NULL REFERENCES tasks(id) ON DELETE CASCADE` (calendar-owned real FK), `UNIQUE (task_id, occurrence_date)`, nullable `status` for "no override".
+- 3 enums (`TaskStatus`, `TaskPriority`, `RecurCycle`), 3 entities (`Task`, `RecurrenceRule`, `TaskInstanceOverride`), 3 `JpaRepository`s — all in `com.childcarewow.calendar.task` package.
+- `TaskRepositoryIT`: 4 tests under `@SpringBootTest @Transactional`:
+  - `roundTripsTask` — exhaustive round-trip via `EntityManager.clear()` after save (creates a `RecurrenceRule` first so `recurrenceId` can reference it).
+  - `enforcesWeeklyRequiresDayOfWeek` — saving a WEEKLY rule with null `dueDayOfWeek` throws (`chk_weekly_dow`).
+  - `enforcesMonthlyRequiresDayOfMonth` — same for MONTHLY + null `dueDayOfMonth` (`chk_monthly_dom`).
+  - `cascadeDeleteOverridesWhenTaskDeleted` — creates a task + 2 overrides, deletes the task with `em.flush()`, asserts both overrides are gone (DB CASCADE fires).
+
+Files changed (count: 11, all new):
+- `src/main/resources/db/migration/V3__tasks.sql`
+- `src/main/java/com/childcarewow/calendar/task/{Task, RecurrenceRule, TaskInstanceOverride, TaskStatus, TaskPriority, RecurCycle}.java`
+- `src/main/java/com/childcarewow/calendar/task/{Task, RecurrenceRule, TaskInstanceOverride}Repository.java`
+- `src/test/java/com/childcarewow/calendar/task/TaskRepositoryIT.java`
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS **first try**
+- [x] 11 tests run, 2 skipped (FlywayMigrationIT @EnabledOnOs Linux/Mac on Windows)
+- [x] JaCoCo: 11 classes, all gates met (≥80% bundle line) — coverage held by exhaustive round-trip
+- [x] CI on PR #23: green
+- [x] `mvn flyway:info` → V1, V2, V3 all Success
+- [x] `\d tasks` → all 4 CHECKs (title length, status enum, priority enum) + FK to recurrence_rules + 4 partial indexes + cascade-delete reference from overrides
+- [x] `\d recurrence_rules` → all 5 CHECKs (cycle enum, dow range, dom range, weekly_dow, monthly_dom)
+
+Notes / surprises:
+- The Part 1.1 patterns (TEXT+CHECK enums, bare uuid for platform refs, exhaustive round-trip, `EntityManager.clear()` to defeat L1 cache) carried forward cleanly. Build green on first try.
+- For the cascade-delete test: `tasks.deleteById(taskId)` followed by `em.flush()` is the right pattern. Without `flush()`, the DELETE stays in the persistence context and the cascade doesn't fire at the DB level. After `flush()`, `em.clear()` to evict the L1 cache before re-`findById()`.
+- The `recurrence_id` FK is **calendar-internal** (both tables in calendar DB), so it's a real Postgres FK; the entity field is bare `UUID` for consistency with the rest of the entity. Future Parts can refactor to `@ManyToOne` if needed.
+
+Next part: **Part 1.3 (Series 1) — V4 holidays** with the named partial unique index `uq_holidays_federal_pending` (Phase 6.7's Nager.Date upsert targets it by name).
+
+---
+
 ## Part 1.1 (Series 1) — V2 events schema + JPA entity + repository IT — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
