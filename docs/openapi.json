@@ -9,6 +9,34 @@
     "description" : "Generated server url"
   } ],
   "paths" : {
+    "/api/v1/events" : {
+      "post" : {
+        "tags" : [ "event-controller" ],
+        "operationId" : "create",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/CreateEventRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/EventView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/attachments/sign-upload" : {
       "post" : {
         "tags" : [ "attachment-controller" ],
@@ -203,6 +231,136 @@
   },
   "components" : {
     "schemas" : {
+      "CreateEventRequest" : {
+        "required" : [ "endDt", "schoolId", "startDt", "title", "type" ],
+        "type" : "object",
+        "properties" : {
+          "type" : {
+            "type" : "string",
+            "enum" : [ "CLASSROOM", "CUSTOM", "SCHOOL" ]
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "title" : {
+            "maxLength" : 120,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "description" : {
+            "type" : "string"
+          },
+          "classroomId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "startDt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "endDt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "allDay" : {
+            "type" : "boolean"
+          },
+          "organizerUserId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "inviteParents" : {
+            "type" : "boolean"
+          }
+        }
+      },
+      "EventView" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "type" : {
+            "type" : "string",
+            "enum" : [ "CLASSROOM", "CUSTOM", "SCHOOL" ]
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "orgId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "classroomId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "title" : {
+            "type" : "string"
+          },
+          "description" : {
+            "type" : "string"
+          },
+          "startDt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "endDt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "allDay" : {
+            "type" : "boolean"
+          },
+          "organizerUserId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "inviteParents" : {
+            "type" : "boolean"
+          },
+          "createdByUserId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "createdAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "updatedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "softFlags" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/SoftFlagView"
+            }
+          }
+        }
+      },
+      "SoftFlagView" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "conflictType" : {
+            "type" : "string"
+          },
+          "conflictingEntityId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "message" : {
+            "type" : "string"
+          }
+        }
+      },
       "SignUploadRequest" : {
         "required" : [ "filename", "mimeType", "schoolId" ],
         "type" : "object",
