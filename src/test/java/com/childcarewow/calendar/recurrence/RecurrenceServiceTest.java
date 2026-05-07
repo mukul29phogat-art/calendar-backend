@@ -118,14 +118,124 @@ class RecurrenceServiceTest {
   }
 
   @Test
-  void weeklyAndMonthlyCyclesNotYetSupported() {
+  void monthlyCycleNotYetSupported() {
     LocalDate dueDate = LocalDate.of(2026, 6, 1);
     Task task = task(dueDate, UUID.randomUUID());
-    when(ruleRepo.findById(any(UUID.class)))
-        .thenReturn(Optional.of(rule(RecurCycle.WEEKLY, dueDate.plusMonths(3))));
+    RecurrenceRule monthly = rule(RecurCycle.MONTHLY, dueDate.plusMonths(3));
+    monthly.setDueDayOfMonth((short) 15);
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(monthly));
     assertThatThrownBy(() -> service.expand(task, dueDate, dueDate.plusMonths(1)))
         .isInstanceOf(UnsupportedOperationException.class)
-        .hasMessageContaining("WEEKLY");
+        .hasMessageContaining("MONTHLY");
+  }
+
+  // -- WEEKLY expansion -------------------------------------------------------
+
+  /** 2026-06-01 is a Monday; the next Tuesday is June 2. Four weeks → June 2, 9, 16, 23. */
+  @Test
+  void weeklyTuesdayRuleEmitsFourTuesdays() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1); // Monday
+    LocalDate untilDate = LocalDate.of(2026, 6, 30);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule weekly = rule(RecurCycle.WEEKLY, untilDate);
+    weekly.setDueDayOfWeek((short) 2); // Tuesday in JS convention
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(weekly));
+
+    ExpansionResult result = service.expand(task, dueDate, untilDate);
+    assertThat(result.occurrences())
+        .containsExactly(
+            LocalDate.of(2026, 6, 2),
+            LocalDate.of(2026, 6, 9),
+            LocalDate.of(2026, 6, 16),
+            LocalDate.of(2026, 6, 23),
+            LocalDate.of(2026, 6, 30));
+    assertThat(result.truncated()).isFalse();
+  }
+
+  /** dueDayOfWeek=0 means Sunday in the JS convention; verifies the 0→Java 7 mapping. */
+  @Test
+  void weeklySundayRuleMapsCorrectly() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1); // Monday
+    LocalDate untilDate = LocalDate.of(2026, 6, 30);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule weekly = rule(RecurCycle.WEEKLY, untilDate);
+    weekly.setDueDayOfWeek((short) 0); // Sunday
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(weekly));
+
+    ExpansionResult result = service.expand(task, dueDate, untilDate);
+    assertThat(result.occurrences())
+        .containsExactly(
+            LocalDate.of(2026, 6, 7),
+            LocalDate.of(2026, 6, 14),
+            LocalDate.of(2026, 6, 21),
+            LocalDate.of(2026, 6, 28));
+  }
+
+  /**
+   * The expand path works in {@link LocalDate}, so DST transitions don't shift dates. Spans the
+   * America/* fall-back boundary (2026-11-01).
+   */
+  @Test
+  void weeklyExpansionAcrossDstBoundaryHoldsDate() {
+    LocalDate dueDate = LocalDate.of(2026, 10, 25); // Sunday
+    LocalDate untilDate = LocalDate.of(2026, 11, 22);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule weekly = rule(RecurCycle.WEEKLY, untilDate);
+    weekly.setDueDayOfWeek((short) 0); // Sunday
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(weekly));
+
+    ExpansionResult result = service.expand(task, dueDate, untilDate);
+    // Five Sundays bracketing the fall-back: 10/25, 11/1 (DST ends), 11/8, 11/15, 11/22.
+    assertThat(result.occurrences())
+        .containsExactly(
+            LocalDate.of(2026, 10, 25),
+            LocalDate.of(2026, 11, 1),
+            LocalDate.of(2026, 11, 8),
+            LocalDate.of(2026, 11, 15),
+            LocalDate.of(2026, 11, 22));
+  }
+
+  @Test
+  void weeklyExpansionWithoutDueDayOfWeekThrowsAtExpand() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule weeklyNoDow = rule(RecurCycle.WEEKLY, dueDate.plusMonths(1));
+    // dueDayOfWeek deliberately unset
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(weeklyNoDow));
+    assertThatThrownBy(() -> service.expand(task, dueDate, dueDate.plusMonths(1)))
+        .isInstanceOf(InvalidRecurrenceException.class)
+        .hasMessageContaining("dueDayOfWeek");
+  }
+
+  @Test
+  void weeklyCreateRequiresDueDayOfWeek() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+    RecurrenceRule rule = rule(RecurCycle.WEEKLY, dueDate.plusMonths(1));
+    // dueDayOfWeek deliberately unset
+    assertThatThrownBy(() -> service.create(rule, dueDate))
+        .isInstanceOf(InvalidRecurrenceException.class)
+        .hasMessageContaining("dueDayOfWeek");
+  }
+
+  @Test
+  void weeklyCreateRejectsOutOfRangeDueDayOfWeek() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+    RecurrenceRule rule = rule(RecurCycle.WEEKLY, dueDate.plusMonths(1));
+    rule.setDueDayOfWeek((short) 7); // out of range (valid is 0..6)
+    assertThatThrownBy(() -> service.create(rule, dueDate))
+        .isInstanceOf(InvalidRecurrenceException.class)
+        .hasMessageContaining("0..6");
+  }
+
+  @Test
+  void weeklyExpandRejectsOutOfRangeDueDayOfWeek() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+    Task task = task(dueDate, UUID.randomUUID());
+    RecurrenceRule weekly = rule(RecurCycle.WEEKLY, dueDate.plusMonths(1));
+    weekly.setDueDayOfWeek((short) -1); // legacy/corrupt rule that bypassed validation
+    when(ruleRepo.findById(any(UUID.class))).thenReturn(Optional.of(weekly));
+    assertThatThrownBy(() -> service.expand(task, dueDate, dueDate.plusMonths(1)))
+        .isInstanceOf(InvalidRecurrenceException.class);
   }
 
   // -- validation -------------------------------------------------------------
