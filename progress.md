@@ -29,6 +29,46 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.11 (Series 3) — `recomputeForEvent` (bidirectional DOUBLE_BOOKING) — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `SoftFlagService.recomputeForEvent(UUID eventId)` — DOUBLE_BOOKING recompute on event save/move with the architectural bidirectional invariant. Algorithm: (1) load event (404 if unknown); (2) clear every existing DOUBLE_BOOKING flag involving the event (either side); (3) if soft-deleted, return early; (4) find overlaps via `EventRepository.findOverlapping`; (5) for each match, insert TWO rows — A→B and B→A — inside the same `@Transactional` so the invariant cannot partially apply on rollback.
+- `SoftFlagService.removeFlagsForEvent(UUID eventId)` — clears DOUBLE_BOOKING flags on either side. Called from the event-delete path so the surviving side's flag (B's, pointing back at A) is also cleaned up.
+- `ConflictFlagRepository.deleteDoubleBookingFlagsForEvent(UUID eventId)` — `@Modifying @Query` JPQL DELETE matching `entityType=EVENT AND conflictType=DOUBLE_BOOKING AND (entityId = :id OR conflictingEntityId = :id)`. Returns affected row count for diagnostics.
+- `EventRepository.findOverlapping(excludeId, schoolId, startDt, endDt, classroomId, organizerUserId)` — same school + **strict-`<`** time overlap + (same classroom OR same organizer). Endpoints don't overlap (per playbook common-failure-points: "A ends at 10:00, B starts at 10:00 → no conflict"). Soft-deleted rows excluded.
+
+Files changed (count: 4):
+- `src/main/java/com/childcarewow/calendar/conflict/ConflictFlagRepository.java` — `+deleteDoubleBookingFlagsForEvent`.
+- `src/main/java/com/childcarewow/calendar/event/EventRepository.java` — `+findOverlapping`.
+- `src/main/java/com/childcarewow/calendar/softflag/SoftFlagService.java` — `+EventRepository` ctor dep, `+recomputeForEvent`, `+removeFlagsForEvent`, `+insertDoubleBookingPair` helper.
+- `src/test/java/com/childcarewow/calendar/softflag/SoftFlagServiceTest.java` — `+`7 tests for the recompute + remove paths.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 44s; bundle gate ≥80% line met.
+- [x] `SoftFlagServiceTest` — 17/17 tests green:
+  - **Bidirectional pair**: `ArgumentCaptor` asserts BOTH saves carry the right entityId/conflictingEntityId cross-references and the message names the OTHER event ("Overlaps with: Event B" / "Overlaps with: Event A").
+  - No-overlap: clears flags but no saves.
+  - Multi-overlap: 2 overlaps → 4 saves (2 pairs).
+  - **Soft-deleted event**: clears flags, but `eventRepo.findOverlapping` is NEVER called and no saves happen.
+  - 404 for unknown event (no clear, no saves).
+  - **Idempotency**: two consecutive calls → 2 deletes + 4 saves (clear-and-rebuild on each call).
+  - `removeFlagsForEvent` delegates to repo.
+- [x] **100% coverage** on `SoftFlagService`: 0/222 instr, 0/24 branch, 0/59 line, 0/9 method missed (CLAUDE.md § 14 mandate met across the expanded surface).
+- [x] CI green on PR #64 ([run 25506211869](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25506211869)).
+
+Notes / surprises:
+- The `@Query` JPQL uses `com.childcarewow.calendar.conflict.FlaggedEntity.EVENT` and `com.childcarewow.calendar.conflict.SoftFlagType.DOUBLE_BOOKING` as **fully-qualified enum literals** rather than parameter binding. This makes the query specific to the EVENT/DOUBLE_BOOKING combination at compile time — when (in 3.12) we add `recomputeForTask` and `recomputeForHoliday`, those get their own typed delete methods rather than a generic parameterized one. Slight code duplication trade for query clarity.
+- The `findOverlapping` query uses **strict-`<`** on both sides of the time check (`e.startDt < :endDt AND :startDt < e.endDt`). This means events sharing an endpoint (A ends at 10:00, B starts at 10:00) are NOT overlapping. Boundary-test coverage will land in the controller-level integration tests in Series 5 once the wire format for time slots is finalized.
+- `recomputeForEvent` always clears flags first, even on the no-overlap path. This is intentional: it ensures the recompute is idempotent and converges to the correct state regardless of prior state. The cost is one DELETE statement per save, but the table has a partial index `idx_conflict_flags_entity` on `(entity_type, entity_id) WHERE dismissed = false` so the cardinality is small.
+- An overlap whose other end is soft-deleted will not appear in `findOverlapping` (the `deletedAt IS NULL` filter). So when event A is recomputed and the previously-overlapping event B was deleted, the recompute correctly drops the A→B and B→A pair. No extra cleanup needed.
+- For the controller-level wire-up (Series 5 / Part 5.4 events.create), the call site will be: after `eventRepo.save(event)` and BEFORE the response is rendered, call `softFlagService.recomputeForEvent(event.getId())`. The result of recompute is intentionally `void` because the response is built from a separate `findActiveByEntity` call after recompute commits.
+
+Next part: 3.12 — `recomputeForTask` (same-day same-assignee task overlap with ±120 min `dueTime` window) + `recomputeForHoliday` (HOLIDAY paint on holiday approve, idempotent). After 3.12, `SoftFlagService` should still be at 100% coverage.
+
+---
+
 ## Part 3.10 (Series 3) — `SoftFlagService` skeleton + dismiss — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
