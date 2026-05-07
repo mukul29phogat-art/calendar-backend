@@ -29,6 +29,43 @@ Next part: X.Y+1
 
 ---
 
+## Part 2.4 (Series 2) — GET /api/v1/auth/me + MeView — STATUS: ✅ done — **Series 2 closed**
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `UserPrincipal` extended with `name` field (sourced from `platform.users.name`); `PlatformUserDirectory` SELECT updated.
+- `MeView` record matching the prototype's `User` type (id, name, email, role, designation?, schoolIds, classroomIds?, childStudentIds?). `@JsonInclude(NON_EMPTY)` elides null/empty optional fields.
+- `AuthController.GET /api/v1/auth/me` → `MeView.from(actor)`.
+- `AuthControllerTest` (slice with `@MockBean PlatformUserDirectory`): PARENT-shaped response confirms designation + classroomIds are elided; unauthenticated → 401.
+- `WhoAmIControllerTest` + `PlatformUserDirectoryIT` updated to include name.
+
+Validation: BUILD SUCCESS, 44 classes, all gates met. CI green on PR #40.
+
+**Series 2 closure stats:** 4 Parts, 7 PRs (#35–#40), auth pipeline complete: JWT validation → UserPrincipal load → PlatformEntityValidator caching → /auth/me. Next: **Series 3** (cross-cutting services starting with GlobalExceptionHandler).
+
+---
+
+## Part 2.3 (Series 2) — PlatformEntityValidator + Caffeine cache + 503 handler — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `pom.xml`: `caffeine 3.1.8`.
+- `common.ValidationException` (400, field+message) + `common.PlatformUnavailableException` (503, fail-closed when platform DB is unreachable).
+- `platform.PlatformEntityValidator` interface + `Impl`: 4 single-key caches + 1 composite (classroom→school) cache, Caffeine 5min TTL / 10K max. Micrometer counters `platform_validator_cache_{hits,misses}`. Catches `DataAccessResourceFailureException` → throws `PlatformUnavailableException`.
+- `PlatformEntityValidatorIT` (4 tests): seed entities exist; unknown returns false; assertX throws on missing; cache-hit counter increments on repeated calls.
+
+Validation: BUILD SUCCESS, 42 classes, all gates met. CI green on PR #39.
+
+Two compilation fixes captured:
+1. **Multi-catch can't list a subclass + parent.** `CannotGetJdbcConnectionException` is a subclass of `DataAccessResourceFailureException`; dropped the subclass.
+2. **`Edit` to pom.xml failed silently** with "file modified since read" — re-Read + re-Edit was needed. Watch for this when concurrent linter activity touches files between Read and Edit.
+
+`@ControllerAdvice` mapping for ValidationException → structured 400 envelope is **deferred to Series 3 / Part 3.0** (GlobalExceptionHandler) where the full ServiceError envelope is implemented holistically.
+
+---
+
 ## Part 2.2 (Series 2) — UserPrincipal record + auth context plumbing — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
