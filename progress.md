@@ -29,6 +29,38 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.4 (Series 3) — AuditEvent `@Immutable` + CI grep guard + immutability doc — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `@org.hibernate.annotations.Immutable` on `AuditEvent`. At flush time Hibernate now silently suppresses any `UPDATE` for managed entities of this type — inserts and `SELECT` continue normally; mutations via `repo.save(modifiedExisting)` are dropped without an exception. Caveat: `@Immutable` only covers updates, not deletes — the CI grep below covers the delete path.
+- New CI step **Audit-event immutability guard** in `.github/workflows/ci.yml` runs `grep -rE "auditEventRepository\.(save|delete)" src/main/java` and fails the build on any match. Note: `AuditService` injects the repo as a variable named `repo`, so the legitimate insert path doesn't match the regex.
+- `docs/security/audit-immutability.md`: spells out the four enforcement layers (service-layer convention, JPA `@Immutable`, CI grep, Series-12 pen-test) and explicitly calls out what isn't covered (native SQL via `EntityManager.createNativeQuery`, raw JDBC, admin tooling).
+- `AuditEventImmutabilityIT`: insert via `AuditService.log` → mutate `user_agent` / `ip_address` / `metadata` in a separate committed transaction (via `TransactionTemplate`) → reload from a fresh transaction → assert every field still has its original value. Cleanup deletes the test row through the test code (CI grep does not scan `src/test`).
+
+Files changed (count: 4):
+- `.github/workflows/ci.yml` — new "Audit-event immutability guard" step.
+- `docs/security/audit-immutability.md` — new (security doc tree gets its first occupant).
+- `src/main/java/com/childcarewow/calendar/crosscut/AuditEvent.java` — `+@Immutable` + Javadoc updates.
+- `src/test/java/com/childcarewow/calendar/audit/AuditEventImmutabilityIT.java` — new (1 test).
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 32s; bundle gate (≥80% line) met.
+- [x] `AuditEventImmutabilityIT` 1/1 green: original `user_agent`, `ip_address`, `metadata` survive a save+flush of a mutated managed entity.
+- [x] All 8 audit tests still green (`AuditAspectIT` 5 + `AuditServiceIT` 2 + immutability 1).
+- [x] Local CI guard `grep -rE "auditEventRepository\.(save|delete)" src/main/java` returns clean.
+- [x] CI green on PR #50 ([run 25501103607](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25501103607)).
+
+Notes / surprises:
+- **`@Immutable` doesn't throw — it silently drops the UPDATE.** The playbook copy ("save throws") is misleading; behavior matches Hibernate's documented semantics. The test asserts on outcome (DB state preserved) instead of an exception.
+- **`@SpringBootTest` without `@Transactional` requires explicit transactions for `entityManager.flush()`** — otherwise `TransactionRequiredException`. First attempt used `em.flush()` directly and failed; refactored to `TransactionTemplate.execute(status -> { ... })` so each step (insert, mutate, reload) commits independently and the third-step assertion reads true DB state, not L1-cache state.
+- The CI grep guard is **regex-on-identifier**, not AST-aware. It deliberately requires the identifier `auditEventRepository` so `AuditService` (which uses `repo`) doesn't match. The trade-off is documented: anyone naming a future field `auditEventRepository` and writing `.save()` against it will fail CI. That's the intended teaching moment — they should call `AuditService.log` instead.
+
+Next part: 3.5 — `TimezoneService` (`zoneFor(schoolId)`, `toSchoolLocalDate(instant, schoolId)`, `isHolidayForSchool(schoolId, localDate)` with Caffeine caching and DST-correct semantics).
+
+---
+
 ## Part 3.3 (Series 3) — `@Audited` annotation + AOP aspect + AuditService — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
