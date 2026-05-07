@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      calendar-db:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: calendar
+          POSTGRES_USER: calendar
+          POSTGRES_PASSWORD: calendar
+        # Bind to host port 5434 to match application.yml (operator's local
+        # machine has a host PostgreSQL service on 5432; we standardized on
+        # 5434 in Part 0.2 + 0.3). Inside the runner there's no such conflict,
+        # but keeping the same port avoids a CI-only application.yml override.
+        ports: ["5434:5432"]
+        options: >-
+          --health-cmd "pg_isready -U calendar"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+      platform-db:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: platform
+          POSTGRES_USER: platform
+          POSTGRES_PASSWORD: platform
+        ports: ["5433:5432"]
+        options: >-
+          --health-cmd "pg_isready -U platform"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Seed platform DB
+        run: |
+          PGPASSWORD=platform psql -h localhost -p 5433 -U platform -d platform -f docker/platform-seed.sql
+
+      - name: Spotless check
+        run: mvn -B spotless:check
+
+      - name: Verify (compile + tests + JaCoCo)
+        run: mvn -B verify
+
+      - name: Flyway dry-run (info)
+        run: mvn -B flyway:info
+
+      - name: Upload JaCoCo report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-report
+          path: target/site/jacoco/
+
+      - name: Coverage PR comment
+        if: github.event_name == 'pull_request'
+        uses: madrapps/jacoco-report@v1.7.1
+        with:
+          paths: ${{ github.workspace }}/target/site/jacoco/jacoco.xml
+          token: ${{ secrets.GITHUB_TOKEN }}
+          min-coverage-overall: 80
+          min-coverage-changed-files: 80
+          title: Coverage Report
