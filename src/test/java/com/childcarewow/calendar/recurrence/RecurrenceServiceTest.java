@@ -13,7 +13,12 @@ import com.childcarewow.calendar.task.RecurCycle;
 import com.childcarewow.calendar.task.RecurrenceRule;
 import com.childcarewow.calendar.task.RecurrenceRuleRepository;
 import com.childcarewow.calendar.task.Task;
+import com.childcarewow.calendar.task.TaskInstanceOverride;
+import com.childcarewow.calendar.task.TaskInstanceOverrideRepository;
+import com.childcarewow.calendar.task.TaskStatus;
 import java.time.LocalDate;
+import java.time.LocalTime;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
@@ -26,7 +31,9 @@ import org.junit.jupiter.api.Test;
 class RecurrenceServiceTest {
 
   private final RecurrenceRuleRepository ruleRepo = mock(RecurrenceRuleRepository.class);
-  private final RecurrenceService service = new RecurrenceService(ruleRepo);
+  private final TaskInstanceOverrideRepository overrideRepo =
+      mock(TaskInstanceOverrideRepository.class);
+  private final RecurrenceService service = new RecurrenceService(ruleRepo, overrideRepo);
 
   // -- DAILY expansion --------------------------------------------------------
 
@@ -496,6 +503,218 @@ class RecurrenceServiceTest {
     assertThatThrownBy(
             () -> service.update(id, rule(RecurCycle.DAILY, dueDate.plusDays(7)), dueDate))
         .isInstanceOf(NotFoundException.class);
+  }
+
+  // -- per-occurrence overrides ----------------------------------------------
+
+  @Test
+  void skippedOccurrenceFilteredFromExpand() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+    LocalDate untilDate = LocalDate.of(2026, 6, 5);
+    UUID taskId = UUID.randomUUID();
+    Task task = task(dueDate, UUID.randomUUID());
+    task.setId(taskId);
+    when(ruleRepo.findById(any(UUID.class)))
+        .thenReturn(Optional.of(rule(RecurCycle.DAILY, untilDate)));
+    TaskInstanceOverride skip = new TaskInstanceOverride();
+    skip.setTaskId(taskId);
+    skip.setOccurrenceDate(LocalDate.of(2026, 6, 3));
+    skip.setSkipped(true);
+    when(overrideRepo.findByTaskId(eq(taskId))).thenReturn(List.of(skip));
+
+    ExpansionResult result = service.expand(task, dueDate, untilDate);
+    assertThat(result.occurrences())
+        .containsExactly(
+            LocalDate.of(2026, 6, 1),
+            LocalDate.of(2026, 6, 2),
+            // 6/3 skipped
+            LocalDate.of(2026, 6, 4),
+            LocalDate.of(2026, 6, 5));
+    assertThat(result.truncated()).isFalse();
+  }
+
+  @Test
+  void nonSkippedOverridesDoNotAffectExpandDates() {
+    LocalDate dueDate = LocalDate.of(2026, 6, 1);
+    LocalDate untilDate = LocalDate.of(2026, 6, 3);
+    UUID taskId = UUID.randomUUID();
+    Task task = task(dueDate, UUID.randomUUID());
+    task.setId(taskId);
+    when(ruleRepo.findById(any(UUID.class)))
+        .thenReturn(Optional.of(rule(RecurCycle.DAILY, untilDate)));
+    TaskInstanceOverride titleOnly = new TaskInstanceOverride();
+    titleOnly.setTaskId(taskId);
+    titleOnly.setOccurrenceDate(LocalDate.of(2026, 6, 2));
+    titleOnly.setTitle("Custom title");
+    when(overrideRepo.findByTaskId(eq(taskId))).thenReturn(List.of(titleOnly));
+
+    ExpansionResult result = service.expand(task, dueDate, untilDate);
+    // All three dates emitted; the overridden title surfaces via projectFor, not via expand.
+    assertThat(result.occurrences()).hasSize(3);
+  }
+
+  @Test
+  void upsertOverrideCreatesNewWhenAbsent() {
+    UUID taskId = UUID.randomUUID();
+    LocalDate date = LocalDate.of(2026, 6, 5);
+    TaskInstanceOverride incoming = new TaskInstanceOverride();
+    incoming.setTaskId(taskId);
+    incoming.setOccurrenceDate(date);
+    incoming.setSkipped(true);
+    when(overrideRepo.findByTaskIdAndOccurrenceDate(eq(taskId), eq(date)))
+        .thenReturn(Optional.empty());
+    when(overrideRepo.save(any(TaskInstanceOverride.class))).thenReturn(incoming);
+
+    TaskInstanceOverride saved = service.upsertOverride(incoming);
+    assertThat(saved).isSameAs(incoming);
+  }
+
+  @Test
+  void upsertOverrideIsIdempotentOnExisting() {
+    UUID taskId = UUID.randomUUID();
+    LocalDate date = LocalDate.of(2026, 6, 5);
+    TaskInstanceOverride existing = new TaskInstanceOverride();
+    existing.setTaskId(taskId);
+    existing.setOccurrenceDate(date);
+    existing.setTitle("old");
+
+    TaskInstanceOverride incoming = new TaskInstanceOverride();
+    incoming.setTaskId(taskId);
+    incoming.setOccurrenceDate(date);
+    incoming.setTitle("new");
+    incoming.setSkipped(true);
+
+    when(overrideRepo.findByTaskIdAndOccurrenceDate(eq(taskId), eq(date)))
+        .thenReturn(Optional.of(existing));
+    when(overrideRepo.save(eq(existing))).thenReturn(existing);
+
+    service.upsertOverride(incoming);
+    // Existing row was updated in place — second call returns the same row id, not a new one
+    assertThat(existing.getTitle()).isEqualTo("new");
+    assertThat(existing.isSkipped()).isTrue();
+  }
+
+  @Test
+  void upsertOverrideRejectsMissingFields() {
+    TaskInstanceOverride bad = new TaskInstanceOverride();
+    assertThatThrownBy(() -> service.upsertOverride(bad))
+        .isInstanceOf(InvalidRecurrenceException.class)
+        .hasMessageContaining("required");
+  }
+
+  @Test
+  void getOverrideDelegatesToRepo() {
+    UUID taskId = UUID.randomUUID();
+    LocalDate date = LocalDate.of(2026, 6, 5);
+    when(overrideRepo.findByTaskIdAndOccurrenceDate(eq(taskId), eq(date)))
+        .thenReturn(Optional.empty());
+    assertThat(service.getOverride(taskId, date)).isEmpty();
+  }
+
+  @Test
+  void removeOverridesForTaskDeletes() {
+    UUID taskId = UUID.randomUUID();
+    service.removeOverridesForTask(taskId);
+    org.mockito.Mockito.verify(overrideRepo).deleteByTaskId(taskId);
+  }
+
+  @Test
+  void removeOverridesFromDateRequiresFromDate() {
+    UUID taskId = UUID.randomUUID();
+    assertThatThrownBy(() -> service.removeOverridesFromDate(taskId, null))
+        .isInstanceOf(InvalidRecurrenceException.class);
+  }
+
+  @Test
+  void removeOverridesFromDateDelegatesToRepo() {
+    UUID taskId = UUID.randomUUID();
+    LocalDate from = LocalDate.of(2026, 6, 5);
+    service.removeOverridesFromDate(taskId, from);
+    org.mockito.Mockito.verify(overrideRepo)
+        .deleteByTaskIdAndOccurrenceDateGreaterThanEqual(taskId, from);
+  }
+
+  @Test
+  void projectForFallsThroughToTaskWhenNoOverride() {
+    UUID taskId = UUID.randomUUID();
+    Task task = task(LocalDate.of(2026, 6, 1), UUID.randomUUID());
+    task.setId(taskId);
+    task.setTitle("Task title");
+    task.setDueTime(LocalTime.of(9, 0));
+    task.setStatus(TaskStatus.TODO);
+    when(overrideRepo.findByTaskIdAndOccurrenceDate(eq(taskId), any(LocalDate.class)))
+        .thenReturn(Optional.empty());
+
+    OccurrenceSnapshot snap = service.projectFor(task, LocalDate.of(2026, 6, 5));
+    assertThat(snap.title()).isEqualTo("Task title");
+    assertThat(snap.dueTime()).isEqualTo(LocalTime.of(9, 0));
+    assertThat(snap.status()).isEqualTo(TaskStatus.TODO);
+  }
+
+  @Test
+  void projectForAppliesOverrideFields() {
+    UUID taskId = UUID.randomUUID();
+    Task task = task(LocalDate.of(2026, 6, 1), UUID.randomUUID());
+    task.setId(taskId);
+    task.setTitle("Default title");
+    task.setDueTime(LocalTime.of(9, 0));
+    task.setStatus(TaskStatus.TODO);
+
+    LocalDate date = LocalDate.of(2026, 6, 5);
+    TaskInstanceOverride override = new TaskInstanceOverride();
+    override.setTaskId(taskId);
+    override.setOccurrenceDate(date);
+    override.setTitle("Special title");
+    override.setDueTime(LocalTime.of(14, 30));
+    override.setStatus(TaskStatus.IN_PROGRESS);
+    when(overrideRepo.findByTaskIdAndOccurrenceDate(eq(taskId), eq(date)))
+        .thenReturn(Optional.of(override));
+
+    OccurrenceSnapshot snap = service.projectFor(task, date);
+    assertThat(snap.title()).isEqualTo("Special title");
+    assertThat(snap.dueTime()).isEqualTo(LocalTime.of(14, 30));
+    assertThat(snap.status()).isEqualTo(TaskStatus.IN_PROGRESS);
+  }
+
+  @Test
+  void projectForReturnsNullForSkippedDate() {
+    UUID taskId = UUID.randomUUID();
+    Task task = task(LocalDate.of(2026, 6, 1), UUID.randomUUID());
+    task.setId(taskId);
+
+    LocalDate date = LocalDate.of(2026, 6, 5);
+    TaskInstanceOverride skip = new TaskInstanceOverride();
+    skip.setTaskId(taskId);
+    skip.setOccurrenceDate(date);
+    skip.setSkipped(true);
+    when(overrideRepo.findByTaskIdAndOccurrenceDate(eq(taskId), eq(date)))
+        .thenReturn(Optional.of(skip));
+
+    assertThat(service.projectFor(task, date)).isNull();
+  }
+
+  @Test
+  void projectForOverrideWithPartialFieldsKeepsTaskDefaultsForOthers() {
+    UUID taskId = UUID.randomUUID();
+    Task task = task(LocalDate.of(2026, 6, 1), UUID.randomUUID());
+    task.setId(taskId);
+    task.setTitle("Default");
+    task.setDueTime(LocalTime.of(9, 0));
+    task.setStatus(TaskStatus.TODO);
+
+    LocalDate date = LocalDate.of(2026, 6, 5);
+    TaskInstanceOverride override = new TaskInstanceOverride();
+    override.setTaskId(taskId);
+    override.setOccurrenceDate(date);
+    override.setTitle("Override title only");
+    // dueTime + status deliberately unset
+    when(overrideRepo.findByTaskIdAndOccurrenceDate(eq(taskId), eq(date)))
+        .thenReturn(Optional.of(override));
+
+    OccurrenceSnapshot snap = service.projectFor(task, date);
+    assertThat(snap.title()).isEqualTo("Override title only");
+    assertThat(snap.dueTime()).isEqualTo(LocalTime.of(9, 0));
+    assertThat(snap.status()).isEqualTo(TaskStatus.TODO);
   }
 
   // -- helpers ----------------------------------------------------------------
