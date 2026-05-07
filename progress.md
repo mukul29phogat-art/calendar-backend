@@ -29,6 +29,53 @@ Next part: X.Y+1
 
 ---
 
+## Part 1.1 (Series 1) — V2 events schema + JPA entity + repository IT — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `V2__events.sql`: `events` table (19 columns) + 3 calendar-owned join tables (`event_attendees`, `event_students`, `event_excluded_participants`). Per locked decision D11, references to platform-owned tables are bare `uuid` columns with SQL comments — NOT real FKs (cross-DB constraints not possible). Real FKs only on calendar-owned children → `events ON DELETE CASCADE`.
+- 4 CHECK constraints: `type IN ('CLASSROOM','CUSTOM','SCHOOL')` (text + CHECK over Postgres ENUM per playbook), `char_length(title) <= 120`, `chk_event_time_range (end_dt > start_dt)`, `chk_event_classroom_required (type <> 'CLASSROOM' OR classroom_id IS NOT NULL)`.
+- 3 partial indexes filtered by `deleted_at IS NULL` for the common read paths: `(school_id, start_dt)`, `organizer_user_id`, `classroom_id`.
+- `pom.xml`: `spring-boot-starter-data-jpa`.
+- `application.yml`: `spring.jpa.hibernate.ddl-auto: validate` (Flyway owns the schema), plus `format_sql: true`, `jdbc.time_zone: UTC`.
+- `Event` entity (com.childcarewow.calendar.event package): JPA `@Entity` with `@Enumerated(EnumType.STRING)` for `type`, getters/setters for all fields. `created_at` / `updated_at` marked `insertable=false, updatable=false` (DB-managed via `DEFAULT now()`).
+- `EventType` enum: `CLASSROOM`, `CUSTOM`, `SCHOOL`.
+- `EventRepository extends JpaRepository<Event, UUID>`.
+- `EventRepositoryIT` (3 tests, `@SpringBootTest @Transactional`):
+  - `roundTripsClassroomEvent` — exhaustive: sets every field, `EntityManager.clear()` to evict L1 cache, asserts every getter on re-read.
+  - `enforcesEndAfterStart` — saving with `end_dt < start_dt` throws `DataIntegrityViolationException` (chk_event_time_range).
+  - `requiresClassroomForClassroomType` — saving `type=CLASSROOM` with `classroom_id=null` throws (chk_event_classroom_required).
+
+Files changed (count: 7, +5 new):
+- `src/main/resources/db/migration/V2__events.sql` (new)
+- `pom.xml` (modified — JPA starter)
+- `src/main/resources/application.yml` (modified — spring.jpa block)
+- `src/main/java/com/childcarewow/calendar/event/Event.java` (new)
+- `src/main/java/com/childcarewow/calendar/event/EventType.java` (new)
+- `src/main/java/com/childcarewow/calendar/event/EventRepository.java` (new)
+- `src/test/java/com/childcarewow/calendar/event/EventRepositoryIT.java` (new)
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS
+- [x] Surefire: 3 tests (`CalendarApplicationTests` + `PlatformDbHealthIndicatorTest`); Failsafe: 4 tests + 2 skipped on Windows (`DatasourceConfigIT` + `EventRepositoryIT` + `FlywayMigrationIT` skipped via `@EnabledOnOs`)
+- [x] CI run on PR #21 green (Linux runs FlywayMigrationIT live, all 7 tests run)
+- [x] JaCoCo: bundle of 5 classes, all gates met (≥80%)
+- [x] `mvn flyway:info` → V1 placeholder Success + V2 events Success
+- [x] `\d events` → 4 CHECK constraints + 3 partial indexes + 3 child-table FKs
+- [x] `\dt event_*` → all 3 child tables present
+- [x] `count(*) FROM events` → 0 (test rolled back via `@Transactional`)
+
+Notes / surprises:
+- **Coverage scare:** initial test was minimal (only set 12 of 18 setters); JaCoCo dropped to 75% (below the 80% gate) because the Event entity has many getters/setters not exercised. Fix: extended the round-trip to cover every field. Now coverage holds. Future entities should follow the same pattern: round-trip tests are exhaustive by default. JPA-entity exclusion via JaCoCo `<exclude>` was considered and rejected — the round-trip is the right place to test entity contract.
+- **L1 cache gotcha:** with `@Transactional`, `events.findById(id)` after `events.save(e)` returns the same in-memory object, masking any DB-side conversion bugs. Calling `em.clear()` between save and find evicts the L1 cache and forces a real `SELECT`. Pattern to use in all repository round-trip ITs.
+- Spring Boot's auto-config picks @Primary calendar DataSource for JPA EntityManagerFactory — no explicit `@Bean` definitions needed (skipped playbook step 4 as redundant; auto-config does the right thing). If a future Part needs JPA on platform datasource too, add the explicit beans then.
+- `gen_random_uuid()` works without `pgcrypto` extension in Postgres 13+; we're on 15. No `CREATE EXTENSION` needed.
+
+Next part: **Part 1.2 (Series 1) — V3 recurrence_rules + tasks + task_instance_overrides.** Recurring tasks per the locked task domain.
+
+---
+
 ## Part 0.7 (Series 0) — Dockerfile multi-stage build — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
