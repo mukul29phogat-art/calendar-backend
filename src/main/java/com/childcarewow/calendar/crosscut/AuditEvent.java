@@ -10,15 +10,23 @@ import java.time.OffsetDateTime;
 import java.util.Map;
 import java.util.UUID;
 import org.hibernate.annotations.ColumnTransformer;
+import org.hibernate.annotations.Immutable;
 import org.hibernate.annotations.JdbcTypeCode;
 import org.hibernate.type.SqlTypes;
 
 /**
- * Insert-only audit log for COPPA compliance. Application-layer immutability (no UPDATE/DELETE) is
- * enforced via {@code @Immutable} in Phase 3.4; the schema permits the operations but no code path
- * issues them.
+ * Insert-only audit log for COPPA compliance. {@link Immutable} causes Hibernate to silently
+ * suppress {@code UPDATE} statements for managed entities of this type — modifications via {@code
+ * save(...)} on a previously-persisted row are not flushed to the database. Inserts and {@code
+ * SELECT} continue to work normally; this annotation does <i>not</i> block deletes (no code path in
+ * {@code src/main} issues one, and CI has a grep guard against {@code .save}/{@code .delete} on the
+ * typed {@code AuditEventRepository} variable name).
+ *
+ * <p>Defense in depth: the schema also permits the operations, so a native SQL bypass would still
+ * succeed. See {@code docs/security/audit-immutability.md}.
  */
 @Entity
+@Immutable
 @Table(name = "audit_events")
 public class AuditEvent {
 
