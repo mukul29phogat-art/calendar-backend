@@ -29,6 +29,54 @@ Next part: X.Y+1
 
 ---
 
+## Part 4.4 (Series 4) — `GET /api/v1/students` with `@AuditRead` (COPPA) — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `auth/StudentsController` — `GET /api/v1/students?classroomId=` (or `?schoolId=`). Annotated with **`@AuditRead("STUDENT_VIEW", subjectsFrom="![id]")`** — every successful invocation writes one row to `audit_events` with the full UUID list batched under `metadata.subject_ids`. The aspect is `@AfterReturning` so 401/403/validation failures generate no audit row.
+- `auth/StudentsReadService.findByScope(schoolId, classroomId, actor)`:
+  - **Parent visibility enforced in service** (not controller): parents see only their `childStudentIds` intersected with the requested scope — targeting a classroom their child isn't in returns empty rather than leaking other children. Parent with no enrolled children short-circuits to empty without a DB hit.
+  - Validation: at least one of `(schoolId, classroomId)` required → `ValidationException` if both null.
+  - **`classroomId` takes precedence** over `schoolId` when both are passed (the FE picker passes both for resilience; classroom is the more specific filter).
+  - Caffeine 60s/1000-entry cache. **Cache key includes the parent's child-id set** with defensive `Set.copyOf` in the record's canonical constructor so upstream mutations can't shift identity. Different parents at the same classroom get different cache entries.
+  - Soft-deleted students (`deleted_at IS NOT NULL`) excluded.
+- `auth/StudentView(id, schoolId, classroomId, name, dob)` — `dob` nullable (`@JsonInclude(NON_EMPTY)`); the platform allows null DOB during the consent stage. JSON serializes as ISO-8601 `yyyy-MM-dd`.
+
+Files changed (count: 5, all new):
+- `src/main/java/com/childcarewow/calendar/auth/{StudentsController,StudentsReadService,StudentView}.java`
+- `src/test/java/com/childcarewow/calendar/auth/{StudentsReadServiceIT,StudentsControllerTest}.java`
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m22s; bundle gate ≥80% line met.
+- [x] `StudentsReadServiceIT` — 11/11 tests green against the seeded platform DB:
+  - Staff sees all in classroom (Aanya in Butterflies); staff sees all in school (Aanya + Jordan); classroom-id wins when both passed.
+  - **Parent sees only own children**: Priya (Aanya's parent) → only Aanya in Butterflies; Daniel (Lila's parent) → only Lila at Maplewood (NOT Noah, who's also at Maplewood but not Daniel's child).
+  - Parent targeting wrong classroom → empty.
+  - Parent with empty `childStudentIds` → empty without DB hit.
+  - **Soft-delete filter** verified by mid-test `UPDATE deleted_at = now()`, post-test reset.
+  - Missing both scope params → `ValidationException`.
+  - Null actor → empty.
+  - Cache hit returns same instance.
+- [x] `StudentsControllerTest` — 4/4 slice tests green, with **real `AuditReadAspect` wired in** so the audit row assertions are end-to-end:
+  - Success → ONE audit row with both subject UUIDs in `metadata.subject_ids` (verified via `argThat(meta → coll.containsAll(...))`).
+  - Parent read also writes audit row (smaller subject set).
+  - Empty result still writes audit row (records that a query happened).
+  - Unauthenticated → 401, **NO audit row** (`@AfterReturning` doesn't fire on failure paths).
+- [x] Per-class JaCoCo: `StudentsController` **100%** (0/13 instr); `StudentsReadService` ~99% line / 90% branch (the 2/22 missed branches are the defensive `null || isEmpty` short-circuit on `parentScope` — covered structurally by `parentWithNoChildrenReturnsEmpty` but JaCoCo flags the OR conservatively); `StudentView` and `CacheKey` **100%**.
+- [x] CI green on PR #80 ([run 25516785445](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25516785445)).
+
+Notes / surprises:
+- **Slice test had to import `AopAutoConfiguration` + `AuditReadAspect`** explicitly. `@WebMvcTest` excludes AOP auto-configuration by default — without these imports the `@AuditRead` annotation on the controller would be silently ignored and the audit-row assertions would all fail with "0 invocations" (not the spec violation it looks like, just the test setup). Documented inline. Same pattern will apply to any future controller-slice test that wants to verify aspect-driven side effects.
+- **The cache key `parentChildIds` defensive copy is not just hygiene** — `UserPrincipal.childStudentIds()` already returns an immutable Set (via the compact-constructor `Set.copyOf`), so upstream mutation isn't a real risk here. But the cache key crosses an architectural boundary (service → cache), and future callers might pass mutable sets. The `Set.copyOf` in the record's canonical constructor is the right defensive layer.
+- **`@JsonInclude(NON_EMPTY)` on `StudentView`** — drops null `dob` from the JSON. The FE prototype already conditionally renders DOB; this just keeps the wire smaller. Caveat: empty strings would also be dropped, but the schema enforces non-empty `name`, so this only affects `dob`.
+- **`classroomId` precedence over `schoolId`**: The SQL conditional builder appends `classroom_id =` first if classroomId is non-null, regardless of schoolId. If a future endpoint needs strict OR semantics ("either classroomId OR schoolId, error if both"), it'll need to be a new method — the current contract is "classroom wins", documented in the test.
+- **Audit-row absence on 401** is the **most important compliance behavior**: failed reads must NOT produce STUDENT_VIEW rows that suggest the actor saw children's data when they didn't. This is verified directly in `unauthenticatedGets401NoAuditRow`.
+
+Next part: 4.5 — Springdoc OpenAPI generation + CI drift check. Will pin the wire contract for everything Series 4 has built so far before Series 5 starts adding write endpoints.
+
+---
+
 ## Part 4.3 (Series 4) — `GET /api/v1/classrooms?schoolId=` (with staffUserIds) — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
