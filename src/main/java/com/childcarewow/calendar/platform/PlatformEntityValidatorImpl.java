@@ -1,6 +1,6 @@
 package com.childcarewow.calendar.platform;
 
-import com.childcarewow.calendar.common.PlatformUnavailableException;
+import com.childcarewow.calendar.exception.PlatformUnavailableException;
 import com.github.benmanes.caffeine.cache.Cache;
 import com.github.benmanes.caffeine.cache.Caffeine;
 import io.micrometer.core.instrument.Counter;

@@ -1,6 +1,6 @@
 package com.childcarewow.calendar.platform;
 
-import com.childcarewow.calendar.common.ValidationException;
+import com.childcarewow.calendar.exception.ValidationException;
 import java.util.UUID;
 
 /**
