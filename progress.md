@@ -29,6 +29,67 @@ Next part: X.Y+1
 
 ---
 
+## Part 1.8 (Series 1) — Migration smoke + rollback documentation — STATUS: ✅ done — **Series 1 closed**
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `docs/migrations.md` — one row per migration (V1–V8) covering what it adds, data risk, rollback approach. Includes the forward-only Flyway convention, the no-platform-FK rule (D11), and the TEXT+CHECK-over-ENUM rationale.
+- Validated all 8 migrations on the live calendar-db: `mvn flyway:info` shows V1 placeholder + V2 events + V3 tasks + V4 holidays + V5 important_dates + V6 conflict_flags + V7 notifications + V8 crosscut, all `Success`.
+- Fresh-DB migration test is **already covered** by `FlywayMigrationIT` (Linux-only on CI; class-level `@EnabledOnOs({OS.LINUX, OS.MAC})`). Spins up a Testcontainers Postgres each run and applies all 8 migrations from scratch. The CI green status across PRs #21–#33 confirms this works end-to-end.
+
+Files changed (count: 1, new):
+- `docs/migrations.md`
+
+Validation:
+- [x] `mvn flyway:info` → 8 versioned migrations, all Success
+- [x] CI on PR #34 green (FlywayMigrationIT applies all 8 to a fresh container)
+- [x] No new schema in this Part — pure documentation
+
+Notes / surprises: none. Series 1 closes on a clean note.
+
+**Series 1 closure stats:**
+- 8 schema migrations (V1–V8)
+- 21 main entities/enums/repos in 7 packages (event/, task/, holiday/, importantdate/, conflict/, notification/, crosscut/)
+- 25+ failsafe ITs across 7 IT classes
+- 13 PRs merged for Series 1 (Parts 1.1–1.8 each had a code PR + a progress PR; some Parts had additional follow-ups for fixes)
+- Total backend PRs: 34
+
+Next series: **Series 2 — Auth + platform-DB integration.** Spec at `implementation_plan.md` line 1512. Wires Supabase JWT validation, the platform-DB read access, and the PolicyService scaffolding.
+
+---
+
+## Part 1.7 (Series 1) — V8 idempotency_keys + audit_events — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `V8__crosscut.sql`: idempotency_keys (text PK, JSONB response_body, expires_at default now()+24h, idx_idempotency_expires for nightly purge) + audit_events (UUID PK, JSONB metadata, INET ip_address, two indexes for actor + target lookups).
+- IdempotencyKey + AuditEvent entities + 2 repositories.
+- AuditEvent.metadata is `Map<String,Object>` not String (per playbook — String-on-jsonb fails with "bytea" type mismatch).
+- AuditEvent.ipAddress uses `@ColumnTransformer(write="?::inet")` to cast bound parameters to INET (Hibernate's default VARCHAR bind is rejected by Postgres).
+- IdempotencyKey.expires_at is `insertable=false` so the DB DEFAULT fires; test calls `em.refresh()` on the **returned managed instance** (saveAndFlush with @Id pre-set merges and returns a NEW managed instance — refreshing the original throws "Entity not managed").
+
+Files changed (count: 6, all new):
+- `src/main/resources/db/migration/V8__crosscut.sql`
+- `src/main/java/com/childcarewow/calendar/crosscut/{IdempotencyKey, AuditEvent, IdempotencyKeyRepository, AuditEventRepository}.java`
+- `src/test/java/com/childcarewow/calendar/crosscut/CrosscutRepositoryIT.java`
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS (after 2 fixes — see lessons)
+- [x] 29 classes analyzed, all gates met
+- [x] CI on PR #33 green
+- [x] `idempotencyKeyDefaultExpiresAt24h`: confirms DB default delta is 24h ± 5s
+- [x] `auditEventInsertOnly`: round-trips inet, user_agent, Map<String,Object> metadata
+
+Notes / surprises (two real lessons):
+1. **Postgres INET requires `?::inet` cast on bound parameters.** Without `@ColumnTransformer(write="?::inet")` Hibernate sends VARCHAR which Postgres rejects. Pattern reusable for any non-standard Postgres type accessed as String (cidr, macaddr, ltree, etc.).
+2. **`saveAndFlush()` with a pre-set `@Id` calls `merge()` (not `persist()`) and returns a NEW managed instance.** The original entity is detached after merge. `em.refresh(original)` throws "Entity not managed". Always capture the returned value.
+
+Next part: Part 1.8.
+
+---
+
 ## Part 1.6 (Series 1) — V7 notifications + recipients + reads + deliveries — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
