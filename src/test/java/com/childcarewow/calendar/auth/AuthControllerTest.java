@@ -31,6 +31,11 @@ class AuthControllerTest {
   @Autowired MockMvc mvc;
   @MockBean PlatformUserDirectory directory;
 
+  // The IdempotencyFilter is a @Component picked up by the security filter chain even in slice
+  // tests; it needs the JPA repo, which @WebMvcTest doesn't load. Stubbed here so the context
+  // loads; this test only exercises GET /api/v1/auth/me, so the filter passes through.
+  @MockBean com.childcarewow.calendar.crosscut.IdempotencyKeyRepository idempotencyKeyRepository;
+
   private static final UUID PRIYA_PARENT = UUID.fromString("33333333-0000-0000-0000-000000000006");
 
   @BeforeEach

@@ -33,6 +33,9 @@ class WhoAmIControllerTest {
   @Autowired MockMvc mvc;
   @MockBean PlatformUserDirectory directory;
 
+  // See AuthControllerTest — same @WebMvcTest filter-chain issue with IdempotencyFilter.
+  @MockBean com.childcarewow.calendar.crosscut.IdempotencyKeyRepository idempotencyKeyRepository;
+
   private static final UUID STUB_ID = UUID.fromString("33333333-0000-0000-0000-000000000001");
 
   @BeforeEach
