@@ -16,14 +16,19 @@ import com.childcarewow.calendar.conflict.ConflictFlag;
 import com.childcarewow.calendar.conflict.ConflictFlagRepository;
 import com.childcarewow.calendar.conflict.FlaggedEntity;
 import com.childcarewow.calendar.conflict.SoftFlagType;
+import com.childcarewow.calendar.event.Event;
+import com.childcarewow.calendar.event.EventRepository;
+import com.childcarewow.calendar.event.EventType;
 import com.childcarewow.calendar.exception.ForbiddenException;
 import com.childcarewow.calendar.exception.NotFoundException;
 import com.childcarewow.calendar.exception.ValidationException;
+import java.time.OffsetDateTime;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 /**
  * Pure unit tests for {@link SoftFlagService}: insert validation, find-active filtering,
@@ -36,7 +41,8 @@ class SoftFlagServiceTest {
   private static final UUID ACTOR = UUID.fromString("33333333-0000-0000-0000-000000000001");
 
   private final ConflictFlagRepository repo = mock(ConflictFlagRepository.class);
-  private final SoftFlagService service = new SoftFlagService(repo);
+  private final EventRepository eventRepo = mock(EventRepository.class);
+  private final SoftFlagService service = new SoftFlagService(repo, eventRepo);
 
   // -- insert -----------------------------------------------------------------
 
@@ -273,5 +279,130 @@ class SoftFlagServiceTest {
     UUID flagId = UUID.randomUUID();
     assertThatThrownBy(() -> service.dismiss(flagId, null)).isInstanceOf(ForbiddenException.class);
     verify(repo, never()).findById(any());
+  }
+
+  // -- recomputeForEvent ------------------------------------------------------
+
+  @Test
+  void recomputeWritesBidirectionalPairForOneOverlap() {
+    UUID eventId = UUID.randomUUID();
+    UUID otherId = UUID.randomUUID();
+    Event a = event(eventId, "Event A");
+    Event b = event(otherId, "Event B");
+    when(eventRepo.findById(eq(eventId))).thenReturn(Optional.of(a));
+    when(eventRepo.findOverlapping(any(), any(), any(), any(), any(), any()))
+        .thenReturn(List.of(b));
+    when(repo.save(any(ConflictFlag.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    service.recomputeForEvent(eventId);
+
+    verify(repo).deleteDoubleBookingFlagsForEvent(eventId);
+    ArgumentCaptor<ConflictFlag> cap = ArgumentCaptor.forClass(ConflictFlag.class);
+    verify(repo, times(2)).save(cap.capture());
+    List<ConflictFlag> saved = cap.getAllValues();
+
+    ConflictFlag aToB = saved.get(0);
+    assertThat(aToB.getEntityId()).isEqualTo(eventId);
+    assertThat(aToB.getConflictingEntityId()).isEqualTo(otherId);
+    assertThat(aToB.getConflictType()).isEqualTo(SoftFlagType.DOUBLE_BOOKING);
+    assertThat(aToB.getEntityType()).isEqualTo(FlaggedEntity.EVENT);
+    assertThat(aToB.getMessage()).contains("Event B");
+
+    ConflictFlag bToA = saved.get(1);
+    assertThat(bToA.getEntityId()).isEqualTo(otherId);
+    assertThat(bToA.getConflictingEntityId()).isEqualTo(eventId);
+    assertThat(bToA.getMessage()).contains("Event A");
+  }
+
+  @Test
+  void recomputeWithNoOverlapsClearsButSavesNothing() {
+    UUID eventId = UUID.randomUUID();
+    Event a = event(eventId, "Solo");
+    when(eventRepo.findById(eq(eventId))).thenReturn(Optional.of(a));
+    when(eventRepo.findOverlapping(any(), any(), any(), any(), any(), any())).thenReturn(List.of());
+
+    service.recomputeForEvent(eventId);
+
+    verify(repo).deleteDoubleBookingFlagsForEvent(eventId);
+    verify(repo, never()).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeWithMultipleOverlapsWritesPairForEach() {
+    UUID eventId = UUID.randomUUID();
+    Event a = event(eventId, "A");
+    Event b = event(UUID.randomUUID(), "B");
+    Event c = event(UUID.randomUUID(), "C");
+    when(eventRepo.findById(eq(eventId))).thenReturn(Optional.of(a));
+    when(eventRepo.findOverlapping(any(), any(), any(), any(), any(), any()))
+        .thenReturn(List.of(b, c));
+    when(repo.save(any(ConflictFlag.class))).thenAnswer(inv -> inv.getArgument(0));
+
+    service.recomputeForEvent(eventId);
+
+    verify(repo, times(4)).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeOnSoftDeletedEventClearsFlagsWithoutOverlapSearch() {
+    UUID eventId = UUID.randomUUID();
+    Event a = event(eventId, "Deleted");
+    a.setDeletedAt(OffsetDateTime.now());
+    when(eventRepo.findById(eq(eventId))).thenReturn(Optional.of(a));
+
+    service.recomputeForEvent(eventId);
+
+    verify(repo).deleteDoubleBookingFlagsForEvent(eventId);
+    verify(eventRepo, never()).findOverlapping(any(), any(), any(), any(), any(), any());
+    verify(repo, never()).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeThrowsForUnknownEvent() {
+    UUID eventId = UUID.randomUUID();
+    when(eventRepo.findById(eq(eventId))).thenReturn(Optional.empty());
+    assertThatThrownBy(() -> service.recomputeForEvent(eventId))
+        .isInstanceOf(NotFoundException.class);
+    verify(repo, never()).deleteDoubleBookingFlagsForEvent(any());
+    verify(repo, never()).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void recomputeIsIdempotent() {
+    UUID eventId = UUID.randomUUID();
+    Event a = event(eventId, "A");
+    Event b = event(UUID.randomUUID(), "B");
+    when(eventRepo.findById(eq(eventId))).thenReturn(Optional.of(a));
+    when(eventRepo.findOverlapping(any(), any(), any(), any(), any(), any()))
+        .thenReturn(List.of(b));
+
+    service.recomputeForEvent(eventId);
+    service.recomputeForEvent(eventId);
+
+    verify(repo, times(2)).deleteDoubleBookingFlagsForEvent(eventId);
+    verify(repo, times(4)).save(any(ConflictFlag.class));
+  }
+
+  @Test
+  void removeFlagsForEventDelegatesToRepo() {
+    UUID eventId = UUID.randomUUID();
+    service.removeFlagsForEvent(eventId);
+    verify(repo).deleteDoubleBookingFlagsForEvent(eventId);
+  }
+
+  // -- helpers ----------------------------------------------------------------
+
+  private static Event event(UUID id, String title) {
+    Event e = new Event();
+    e.setId(id);
+    e.setOrgId(ORG);
+    e.setSchoolId(SCHOOL);
+    e.setTitle(title);
+    e.setType(EventType.CUSTOM);
+    e.setStartDt(OffsetDateTime.parse("2026-06-01T09:00:00Z"));
+    e.setEndDt(OffsetDateTime.parse("2026-06-01T10:00:00Z"));
+    e.setOrganizerUserId(ACTOR);
+    e.setCreatedByUserId(ACTOR);
+    return e;
   }
 }
