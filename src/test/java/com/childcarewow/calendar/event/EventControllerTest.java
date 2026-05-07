@@ -70,6 +70,7 @@ class EventControllerTest {
                 OffsetDateTime.now(),
                 List.of(),
                 List.of(),
+                List.of(),
                 List.of()));
 
     String token = signer.sign(OLIVIA.toString());

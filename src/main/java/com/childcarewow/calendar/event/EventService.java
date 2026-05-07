@@ -12,6 +12,7 @@ import com.childcarewow.calendar.timezone.TimezoneService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import java.time.LocalDate;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.beans.factory.annotation.Qualifier;
@@ -87,6 +88,14 @@ public class EventService {
       }
     }
 
+    // SCHOOL-only: classroomId/attendees/students are explicitly NOT used. We tag each
+    // excludedParticipantId as USER or STUDENT after the entity save so we have an event_id to
+    // bind to. Resolution happens here so we can fail fast if any id matches neither table.
+    List<EventView.ExcludedParticipantView> resolvedExclusions = List.of();
+    if (req.type() == EventType.SCHOOL && !req.excludedParticipantIds().isEmpty()) {
+      resolvedExclusions = resolveExclusions(req.excludedParticipantIds());
+    }
+
     Event event = new Event();
     event.setOrgId(actor.orgId());
     event.setSchoolId(req.schoolId());
@@ -113,6 +122,11 @@ public class EventService {
       insertStudents(eventId, req.studentIds());
     }
 
+    // SCHOOL-only (and any future type): insert resolved exclusions.
+    if (!resolvedExclusions.isEmpty()) {
+      insertExclusions(eventId, resolvedExclusions);
+    }
+
     // Soft-flag recompute (DOUBLE_BOOKING bidirectional). Always runs, even if no overlaps —
     // it'll just clear-and-rebuild to the same state. Cheap when there's nothing in scope.
     softFlagService.recomputeForEvent(eventId);
@@ -124,7 +138,38 @@ public class EventService {
         saved,
         req.type() == EventType.CUSTOM ? List.copyOf(req.attendeeUserIds()) : List.of(),
         req.type() == EventType.CUSTOM ? List.copyOf(req.studentIds()) : List.of(),
+        resolvedExclusions,
         softFlagService.findActiveByEntity(FlaggedEntity.EVENT, eventId));
+  }
+
+  /**
+   * Resolves each id to USER or STUDENT. Precedence: USER first (if both match in theory, the
+   * exclusion is interpreted as the user). If neither matches, throw {@link ValidationException} —
+   * better to surface a typo than silently drop the exclusion.
+   */
+  private List<EventView.ExcludedParticipantView> resolveExclusions(List<UUID> ids) {
+    List<EventView.ExcludedParticipantView> out = new ArrayList<>(ids.size());
+    for (UUID id : ids) {
+      if (platformValidator.userExists(id)) {
+        out.add(new EventView.ExcludedParticipantView(id, "USER"));
+      } else if (platformValidator.studentExists(id)) {
+        out.add(new EventView.ExcludedParticipantView(id, "STUDENT"));
+      } else {
+        throw new ValidationException(
+            "excludedParticipantIds", "id " + id + " matches neither a user nor a student");
+      }
+    }
+    return out;
+  }
+
+  private void insertExclusions(UUID eventId, List<EventView.ExcludedParticipantView> exclusions) {
+    calendarJdbc.batchUpdate(
+        "INSERT INTO event_excluded_participants "
+            + "(event_id, participant_id, participant_type) VALUES (?, ?, ?) "
+            + "ON CONFLICT DO NOTHING",
+        exclusions.stream()
+            .map(e -> new Object[] {eventId, e.participantId(), e.participantType()})
+            .toList());
   }
 
   private void insertAttendees(UUID eventId, List<UUID> userIds) {
@@ -158,12 +203,24 @@ public class EventService {
       throw new ValidationException("classroomId", "classroomId is required for CLASSROOM events");
     }
     if (req.type() == EventType.SCHOOL) {
-      // SCHOOL with excludedParticipantIds lands in Part 5.3.
-      throw new ValidationException(
-          "type", "Event type SCHOOL is not yet supported (lands in Part 5.3)");
+      // SCHOOL: no classroom, no attendees, no students. Fail fast on caller mistakes.
+      if (req.classroomId() != null) {
+        throw new ValidationException("classroomId", "SCHOOL events cannot have a classroomId");
+      }
+      if (!req.attendeeUserIds().isEmpty() || !req.studentIds().isEmpty()) {
+        throw new ValidationException(
+            "attendeeUserIds",
+            "SCHOOL events use excludedParticipantIds, not attendeeUserIds/studentIds");
+      }
     }
-    if (req.type() != EventType.CLASSROOM && req.type() != EventType.CUSTOM) {
+    if (req.type() != EventType.CLASSROOM
+        && req.type() != EventType.CUSTOM
+        && req.type() != EventType.SCHOOL) {
       throw new ValidationException("type", "Unknown event type: " + req.type());
+    }
+    if (req.type() != EventType.SCHOOL && !req.excludedParticipantIds().isEmpty()) {
+      throw new ValidationException(
+          "excludedParticipantIds", "excludedParticipantIds is only valid for SCHOOL events");
     }
   }
 }

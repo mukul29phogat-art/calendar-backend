@@ -18,6 +18,7 @@ final class EventMapper {
       Event entity,
       List<UUID> attendeeUserIds,
       List<UUID> studentIds,
+      List<EventView.ExcludedParticipantView> excludedParticipants,
       List<ConflictFlag> activeFlags) {
     List<EventView.SoftFlagView> flagViews =
         activeFlags.stream()
@@ -47,6 +48,7 @@ final class EventMapper {
         entity.getUpdatedAt(),
         attendeeUserIds == null ? List.of() : attendeeUserIds,
         studentIds == null ? List.of() : studentIds,
+        excludedParticipants == null ? List.of() : excludedParticipants,
         flagViews);
   }
 }

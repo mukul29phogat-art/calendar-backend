@@ -168,23 +168,143 @@ class EventServiceIT {
         .hasMessageContaining("classroomId");
   }
 
+  // -- SCHOOL type ------------------------------------------------------------
+
   @Test
-  void rejectsSchoolTypeUntil5_3() {
+  void schoolEventCreatesWithoutClassroomOrAttendees() {
     CreateEventRequest req =
         new CreateEventRequest(
             EventType.SCHOOL,
             SUNRISE,
-            "IT-school",
+            "IT-school-assembly",
+            "All-school assembly",
+            null,
+            OffsetDateTime.parse("2026-09-30T09:00:00-04:00"),
+            OffsetDateTime.parse("2026-09-30T10:00:00-04:00"),
+            false,
+            null,
+            true);
+
+    EventView view = service.create(req, admin(OLIVIA));
+    assertThat(view.type()).isEqualTo(EventType.SCHOOL);
+    assertThat(view.classroomId()).isNull();
+    assertThat(view.attendeeUserIds()).isEmpty();
+    assertThat(view.studentIds()).isEmpty();
+    assertThat(view.excludedParticipants()).isEmpty();
+
+    Integer attendees =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM event_attendees WHERE event_id = ?", Integer.class, view.id());
+    Integer students =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM event_students WHERE event_id = ?", Integer.class, view.id());
+    assertThat(attendees).isZero();
+    assertThat(students).isZero();
+  }
+
+  @Test
+  void schoolEventWithMixedExclusionsTagsParticipantTypeCorrectly() {
+    UUID maya = UUID.fromString("33333333-0000-0000-0000-000000000004"); // user
+    UUID aanya = UUID.fromString("55555555-0000-0000-0000-000000000001"); // student
+
+    CreateEventRequest req =
+        new CreateEventRequest(
+            EventType.SCHOOL,
+            SUNRISE,
+            "IT-school-with-exclusions",
             null,
             null,
-            OffsetDateTime.parse("2026-09-15T14:00:00-04:00"),
-            OffsetDateTime.parse("2026-09-15T15:00:00-04:00"),
+            OffsetDateTime.parse("2026-10-15T09:00:00-04:00"),
+            OffsetDateTime.parse("2026-10-15T10:00:00-04:00"),
+            false,
+            null,
+            false,
+            null,
+            null,
+            java.util.List.of(maya, aanya));
+
+    EventView view = service.create(req, admin(OLIVIA));
+    assertThat(view.excludedParticipants()).hasSize(2);
+
+    // Pull from DB to verify the participant_type tags landed correctly.
+    var rows =
+        calendarJdbc.query(
+            "SELECT participant_id, participant_type FROM event_excluded_participants "
+                + "WHERE event_id = ? ORDER BY participant_id",
+            (rs, n) ->
+                java.util.Map.of(
+                    "id", UUID.fromString(rs.getString("participant_id")),
+                    "type", rs.getString("participant_type")),
+            view.id());
+    assertThat(rows).hasSize(2);
+    var byId =
+        rows.stream()
+            .collect(java.util.stream.Collectors.toMap(m -> m.get("id"), m -> m.get("type")));
+    assertThat(byId).containsEntry(maya, "USER").containsEntry(aanya, "STUDENT");
+  }
+
+  @Test
+  void schoolEventRejectsExcludedIdMatchingNeitherUserNorStudent() {
+    CreateEventRequest req =
+        new CreateEventRequest(
+            EventType.SCHOOL,
+            SUNRISE,
+            "IT-school-bad-excl",
+            null,
+            null,
+            OffsetDateTime.parse("2026-10-15T09:00:00-04:00"),
+            OffsetDateTime.parse("2026-10-15T10:00:00-04:00"),
+            false,
+            null,
+            false,
+            null,
+            null,
+            java.util.List.of(UNKNOWN));
+    assertThatThrownBy(() -> service.create(req, admin(OLIVIA)))
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("matches neither");
+  }
+
+  @Test
+  void schoolEventRejectsClassroomId() {
+    CreateEventRequest req =
+        new CreateEventRequest(
+            EventType.SCHOOL,
+            SUNRISE,
+            "IT-school-with-classroom",
+            null,
+            BUTTERFLIES,
+            OffsetDateTime.parse("2026-10-15T09:00:00-04:00"),
+            OffsetDateTime.parse("2026-10-15T10:00:00-04:00"),
             false,
             null,
             false);
     assertThatThrownBy(() -> service.create(req, admin(OLIVIA)))
         .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("SCHOOL is not yet supported");
+        .hasMessageContaining("SCHOOL events cannot have a classroomId");
+  }
+
+  @Test
+  void rejectsExcludedParticipantIdsForNonSchoolEvent() {
+    UUID aanya = UUID.fromString("55555555-0000-0000-0000-000000000001");
+    CreateEventRequest req =
+        new CreateEventRequest(
+            EventType.CLASSROOM,
+            SUNRISE,
+            "IT-classroom-excl-not-allowed",
+            null,
+            BUTTERFLIES,
+            OffsetDateTime.parse("2026-10-15T09:00:00-04:00"),
+            OffsetDateTime.parse("2026-10-15T10:00:00-04:00"),
+            false,
+            null,
+            false,
+            null,
+            null,
+            java.util.List.of(aanya));
+    assertThatThrownBy(() -> service.create(req, admin(OLIVIA)))
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("only valid for SCHOOL");
   }
 
   // -- CUSTOM type ------------------------------------------------------------

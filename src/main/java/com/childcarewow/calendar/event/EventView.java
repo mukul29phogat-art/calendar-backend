@@ -33,9 +33,13 @@ public record EventView(
     OffsetDateTime updatedAt,
     List<UUID> attendeeUserIds,
     List<UUID> studentIds,
+    List<ExcludedParticipantView> excludedParticipants,
     List<SoftFlagView> softFlags) {
 
   /** Trimmed flag shape for inline rendering on the event card. */
   public record SoftFlagView(
       UUID id, String conflictType, UUID conflictingEntityId, String message) {}
+
+  /** Tagged exclusion: a single participant_id with its inferred USER/STUDENT type. */
+  public record ExcludedParticipantView(UUID participantId, String participantType) {}
 }
