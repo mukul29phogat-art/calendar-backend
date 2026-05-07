@@ -29,6 +29,38 @@ Next part: X.Y+1
 
 ---
 
+## Part 1.4 (Series 1) — V5 important_dates — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `V5__important_dates.sql`: TEXT+CHECK `kind` (BIRTHDAY/IMPORTANT), `visible_to_parents BOOLEAN DEFAULT false` (orthogonal gate to kind — a BIRTHDAY can be admin-only; an IMPORTANT can be parent-visible), bare uuid for platform refs (orgs, schools, students, users) per D11. Two non-unique partial indexes for read paths.
+- `ImportantKind` enum, `ImportantDate` entity, `ImportantDateRepository` in `com.childcarewow.calendar.importantdate`.
+- `ImportantDateRepositoryIT` (3 tests):
+  - `roundTripsBirthday` — exhaustive: BIRTHDAY with student_id and visible_to_parents=true.
+  - `roundTripsImportantWithDefaultParentVisibilityFalse` — IMPORTANT without student_id; verifies the DB default applies.
+  - `birthdayWithoutStudentIdPermitted` — pins the architecture-spec decision: student_id is **NOT** required at the DB level for BIRTHDAY (service layer responsibility). If a future migration adds a CHECK constraint to enforce it, this test breaks deliberately.
+
+Files changed (count: 5, all new):
+- `src/main/resources/db/migration/V5__important_dates.sql`
+- `src/main/java/com/childcarewow/calendar/importantdate/{ImportantKind, ImportantDate, ImportantDateRepository}.java`
+- `src/test/java/com/childcarewow/calendar/importantdate/ImportantDateRepositoryIT.java`
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS first try
+- [x] 18 tests run, 2 skipped (FlywayMigrationIT @EnabledOnOs Linux/Mac)
+- [x] JaCoCo: 15 classes analyzed, all gates met
+- [x] CI on PR #27: green
+- [x] `mvn flyway:info` → V1+V2+V3+V4+V5 all Success
+
+Notes / surprises:
+- Series 1 patterns continue to hold cleanly. No surprises.
+- Net: third consecutive Part-of-Series-1 with first-try BUILD SUCCESS. The "exhaustive round-trip + bare uuid + TEXT+CHECK + @SpringBootTest @Transactional + em.clear()" recipe is stable.
+
+Next part: **Part 1.5 (Series 1) — V6 conflict_flags (bidirectional)** — soft-flag table referenced from events/tasks for HOLIDAY/DOUBLE_BOOKING/RESOURCE warnings.
+
+---
+
 ## Part 1.3 (Series 1) — V4 holidays (named partial unique index for federal upsert) — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
