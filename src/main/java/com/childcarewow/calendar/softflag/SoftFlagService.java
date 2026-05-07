@@ -6,6 +6,8 @@ import com.childcarewow.calendar.conflict.ConflictFlag;
 import com.childcarewow.calendar.conflict.ConflictFlagRepository;
 import com.childcarewow.calendar.conflict.FlaggedEntity;
 import com.childcarewow.calendar.conflict.SoftFlagType;
+import com.childcarewow.calendar.event.Event;
+import com.childcarewow.calendar.event.EventRepository;
 import com.childcarewow.calendar.exception.ForbiddenException;
 import com.childcarewow.calendar.exception.NotFoundException;
 import com.childcarewow.calendar.exception.ValidationException;
@@ -29,9 +31,11 @@ import org.springframework.transaction.annotation.Transactional;
 public class SoftFlagService {
 
   private final ConflictFlagRepository repo;
+  private final EventRepository eventRepo;
 
-  public SoftFlagService(ConflictFlagRepository repo) {
+  public SoftFlagService(ConflictFlagRepository repo, EventRepository eventRepo) {
     this.repo = repo;
+    this.eventRepo = eventRepo;
   }
 
   /**
@@ -101,5 +105,69 @@ public class SoftFlagService {
     flag.setDismissedByUserId(actor.id());
     flag.setDismissedAt(OffsetDateTime.now());
     return repo.save(flag);
+  }
+
+  // -- recompute hooks --------------------------------------------------------
+
+  /**
+   * Recomputes {@code DOUBLE_BOOKING} flags for an event after it's saved or moved. Clears every
+   * existing flag involving the event (on either side of the pair), then inserts a fresh A&harr;B
+   * pair for each current overlap. The bidirectional invariant — both endpoints carry a flag so the
+   * FE can render warnings on both events without re-fetching the other side — is preserved by
+   * inserting both rows in this single transaction.
+   *
+   * <p>Soft-deleted events skip overlap detection and only clear their flags (callers should also
+   * call {@link #removeFlagsForEvent} after a hard delete to ensure the other side is cleaned up).
+   *
+   * <p>Idempotent: running this twice on the same event produces the same final state.
+   */
+  @Transactional
+  public void recomputeForEvent(UUID eventId) {
+    Event event =
+        eventRepo.findById(eventId).orElseThrow(() -> new NotFoundException("Event", eventId));
+
+    // Always clear first — both for soft-deletes (keep nothing) and live events (rebuild).
+    repo.deleteDoubleBookingFlagsForEvent(eventId);
+
+    if (event.getDeletedAt() != null) {
+      return;
+    }
+
+    List<Event> overlaps =
+        eventRepo.findOverlapping(
+            event.getId(),
+            event.getSchoolId(),
+            event.getStartDt(),
+            event.getEndDt(),
+            event.getClassroomId(),
+            event.getOrganizerUserId());
+
+    for (Event other : overlaps) {
+      // A -> B
+      insertDoubleBookingPair(event, other);
+      // B -> A
+      insertDoubleBookingPair(other, event);
+    }
+  }
+
+  /**
+   * Hard-clears DOUBLE_BOOKING flags involving an event on either side. Called from the event
+   * delete path so the other endpoint of every pair (B's flag pointing at A) is also cleared.
+   */
+  @Transactional
+  public void removeFlagsForEvent(UUID eventId) {
+    repo.deleteDoubleBookingFlagsForEvent(eventId);
+  }
+
+  private void insertDoubleBookingPair(Event subject, Event other) {
+    ConflictFlag flag = new ConflictFlag();
+    flag.setOrgId(subject.getOrgId());
+    flag.setSchoolId(subject.getSchoolId());
+    flag.setEntityType(FlaggedEntity.EVENT);
+    flag.setEntityId(subject.getId());
+    flag.setConflictType(SoftFlagType.DOUBLE_BOOKING);
+    flag.setConflictingEntityId(other.getId());
+    flag.setMessage("Overlaps with: " + other.getTitle());
+    repo.save(flag);
   }
 }
