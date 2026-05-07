@@ -29,6 +29,42 @@ Next part: X.Y+1
 
 ---
 
+## Part 2.1 (Series 2) — Spring Security + Supabase JWT validation — STATUS: ✅ done — **Series 2 begun**
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `pom.xml`: `spring-boot-starter-security` + `spring-boot-starter-oauth2-resource-server`.
+- `application.yml`: oauth2 resource-server config (`public-key-location: classpath:supabase-jwt-public-key.pem`); multipart limits (11MB request / 10MB file); Tomcat `max-http-form-post-size: 256KB`.
+- `SecurityConfig` (`com.childcarewow.calendar.auth`): stateless filter chain, CSRF disabled, public actuator + OpenAPI paths, `/api/v1/**` authenticated, everything else denied. CORS allows `http://localhost:5173` + `*.calendar.childcarewow.com` with the Authorization + Idempotency-Key headers and exposes X-Unread-Count + trace-id.
+- `WhoAmIController`: `GET /api/v1/whoami` returning the JWT subject. Smoke endpoint; replaced by real domain controllers Series 4+.
+- `TestJwtSigner` (test-only utility) + 2048-bit RSA test keypair committed under `src/test/resources/supabase-jwt-{public,private}-key.pem`. `.gitignore` extended with explicit `!`-rules for both PEMs (default `*.pem` would block them).
+- `WhoAmIControllerTest` (`@WebMvcTest` slice + `@Import(SecurityConfig.class)`) — 5 cases: no Authorization → 401; tampered signature → 401 + `WWW-Authenticate: invalid_token`; valid RS256 token → 200 with subject; CORS preflight from localhost:5173 → 200 + Allow-* headers; preflight from evil.example → 403.
+
+Files changed (count: 8, all new + 2 modified):
+- `pom.xml` (modified)
+- `src/main/resources/application.yml` (modified)
+- `.gitignore` (modified — explicit !-rules)
+- `src/main/java/com/childcarewow/calendar/auth/{SecurityConfig, WhoAmIController}.java` (new)
+- `src/test/java/com/childcarewow/calendar/auth/{TestJwtSigner, WhoAmIControllerTest}.java` (new)
+- `src/test/resources/supabase-jwt-{public,private}-key.pem` (new — test fixtures)
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS
+- [x] 31 classes analyzed, all gates met
+- [x] CI on PR #35 green (after the `.gitignore` fix in a follow-up commit on the same branch)
+
+Notes / surprises (two real issues fixed):
+1. **`.gitignore`'s `*.pem` rule blocked the test fixtures** from being committed. Without them on origin, CI's classpath couldn't load `classpath:supabase-jwt-public-key.pem` and the JwtDecoder bean failed at startup. Added explicit `!src/test/resources/supabase-jwt-*.pem` allow-rules. **Pattern:** any future test fixture under `*.pem`/`*.key` needs an explicit gitignore exception.
+2. **`KeyFactory.parsePrivateKey(...)` doesn't exist** — the API is `KeyFactory.generatePrivate(KeySpec)`. Caught by the compiler in the first verify run; trivial fix.
+
+Strategic deviation worth flagging:
+- The playbook spec uses `public-key-location` which only handles **RSA** keys. **Supabase signs with ES256** (ECDSA P-256, per the JWKS we captured in P0.2). The test fixture is RSA-keyed solely so the slice tests can exercise the validation path. Real Supabase token validation lands in Series 11 by overriding `application-{env}.yml` to use `jwk-set-uri: ${calendar.auth.supabase-issuer}/.well-known/jwks.json` instead of `public-key-location`. The contract is otherwise identical.
+
+Next part: **Part 2.2 (Series 2) — UserPrincipal record + auth context plumbing.** Spec: `implementation_plan.md` line 1624.
+
+---
+
 ## Part 1.8 (Series 1) — Migration smoke + rollback documentation — STATUS: ✅ done — **Series 1 closed**
 Date: 2026-05-07
 Operator: Mukul Phogat
