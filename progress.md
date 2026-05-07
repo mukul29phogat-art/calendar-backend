@@ -29,6 +29,54 @@ Next part: X.Y+1
 
 ---
 
+## Part 4.1 (Series 4) — `GET /api/v1/users` (assignee-selector endpoint) — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `auth/UsersController` — `GET /api/v1/users?schoolId=&role=`, gated by `policyService.assertCan(actor, "users.read")`. Returns `List<UserView>` sorted by name. Not `@AuditRead`-annotated — listed entities are users, not children; COPPA-cadence audits would be noise.
+- `auth/UsersReadService` — Caffeine cache (1000 entries / 60s TTL) keyed on `(schoolId, role)`; query via `NamedParameterJdbcTemplate` with the `(:role IS NULL OR u.role = :role)` pattern. Null role bound with explicit `Types.VARCHAR` to dodge a Postgres type-inference quirk.
+- `auth/UserView` — trimmed `(id, name, email, role, designation)` record. Full `User` shape with joined arrays remains `/auth/me`-only (per-actor query, not list-friendly).
+- `config/DatasourceConfig` — new `platformNamedJdbcTemplate` bean wrapping the existing positional `platformJdbcTemplate`.
+- `policy/PolicyService` + `PolicyServiceImpl` — new `users.read` action: non-PARENT (admins + STAFF allowed; parents excluded so they can't enumerate other parents at their school). Catalog now 20 actions.
+
+Files changed (count: 9):
+- `src/main/java/com/childcarewow/calendar/auth/{UsersController,UsersReadService,UserView}.java` — new (3 files).
+- `src/main/java/com/childcarewow/calendar/config/DatasourceConfig.java` — `+platformNamedJdbcTemplate` bean.
+- `src/main/java/com/childcarewow/calendar/policy/PolicyService.java` — Javadoc lists `users.read`.
+- `src/main/java/com/childcarewow/calendar/policy/PolicyServiceImpl.java` — `+case "users.read" -> nonParent(actor)`.
+- `src/test/java/com/childcarewow/calendar/auth/UsersReadServiceIT.java` — new (6 tests).
+- `src/test/java/com/childcarewow/calendar/auth/UsersControllerTest.java` — new (4 tests).
+- `src/test/java/com/childcarewow/calendar/policy/PolicyServiceImplTest.java` — `+`4 rows in the parameterized matrix for `users.read` × all 4 roles.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 42s; bundle gate ≥80% line met.
+- [x] `UsersReadServiceIT` — 6/6 tests green against the real platform DB:
+  - All-Sunrise list returns exactly 5 users sorted alphabetically: Maya Diallo, Olivia Park, Priya Singh, Ravi Mehta, Tom Becker.
+  - STAFF filter at Sunrise → exactly Maya + Tom.
+  - ORG_ADMIN filter at Sunrise → just Olivia with `designation="Owner"`.
+  - PARENT filter at Maplewood → just Daniel Cho; designation null.
+  - Unknown school → empty list.
+  - Cache hit returns the **same list instance** (Caffeine semantic).
+- [x] `UsersControllerTest` — 4/4 slice tests green: admin lists; admin filters by role; PARENT → 403 with `FORBIDDEN` envelope; unauthenticated → 401.
+- [x] `PolicyServiceImplTest` — 76/76 tests green (was 72; +4 for `users.read`); `PolicyServiceImpl` still **100%** coverage across instr/branch/line/method.
+- [x] Per-class JaCoCo: `UsersController` **100%** (0/20 instr · 0/6 line · 0/2 method); `UsersReadService` **100%** (0/79 instr · 0/2 branch · 0/19 line · 0/5 method); `UsersReadService.CacheKey` **100%**.
+- [x] CI green on PR #74 ([run 25514793189](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25514793189)).
+
+Notes / surprises:
+- **Postgres "could not determine data type of parameter $2"** on the first verify run. Cause: the `(:role IS NULL OR u.role = :role)` JPQL pattern with a null-valued parameter fails server-side type inference because Postgres sees `NULL` on both sides without context. Fix: bind via `params.addValue("role", value, java.sql.Types.VARCHAR)` to give the driver an explicit type. Captured the explanation in a comment on the relevant `addValue` call. Generic JDBC trap; will surface again with any future filtered-list endpoint that has nullable params.
+- **Cache returns the same list instance, not a copy.** Caffeine's `Cache#get(key, mappingFunction)` returns the cached value as-is. The `UserView` record is immutable (final fields, deeply value-typed) so this is safe — but if anyone ever decides to wrap the result in a `Collections.unmodifiableList(...)` or copy, the cache hit semantics change. Documented via test assertion `isSameAs(first)` so a future change is caught immediately.
+- **Slice test imports `PolicyServiceImpl` directly.** A `@MockBean PolicyService` would have forced every test to stub `assertCan()` (with the right exception for the PARENT case), turning each test into a duplicate of the impl's logic. Importing the real impl means the policy gate is exercised end-to-end; trade-off is a slightly heavier slice test context, which adds ~1s to startup (already amortized over 4 tests).
+- **`MissingServletRequestParameterException` → 500 (not 400).** The `GlobalExceptionHandler` from Part 3.0 doesn't have a mapper for this Spring exception; missing-required-param requests fall through to the unknown-exception → 500 path. Dropped the originally-planned `missingSchoolIdGets400` test rather than expand the envelope-test surface mid-Part. **Follow-up**: one-line handler + test, deferred to a Series-4-wide validation pass when the other parts (4.2/4.3/4.4/4.5) all need the same input-validation polish.
+- The `PolicyServiceImpl` 100% guarantee is intact through this part. Each new policy action requires:
+  1. New `case` arm in `PolicyServiceImpl.can(actor, action)`.
+  2. New rows in `PolicyServiceImplTest.resourceLessActions` for all 4 roles.
+  This pattern keeps coverage perfect and forces explicit role-by-role acceptance for every new action — exactly what the locked decision D8 ("no RLS, single security gate") requires.
+
+Next part: 4.2 — `GET /api/v1/schools` (school switcher; ORG_ADMIN sees org-wide, others see their assigned schools).
+
+---
+
 ## Part 4.0a (Series 4) — `@AuditRead` annotation + `AuditReadAspect` — STATUS: ✅ done · **OPENS SERIES 4**
 Date: 2026-05-07
 Operator: Mukul Phogat
