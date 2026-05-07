@@ -3,7 +3,6 @@ package com.childcarewow.calendar.policy;
 import com.childcarewow.calendar.auth.Role;
 import com.childcarewow.calendar.auth.UserPrincipal;
 import com.childcarewow.calendar.event.Event;
-import com.childcarewow.calendar.event.EventType;
 import com.childcarewow.calendar.task.Task;
 import org.springframework.stereotype.Service;
 
@@ -110,12 +109,5 @@ public class PolicyServiceImpl implements PolicyService {
 
   private static boolean isAdmin(UserPrincipal actor) {
     return actor.role() == Role.ORG_ADMIN || actor.role() == Role.SCHOOL_ADMIN;
-  }
-
-  // Suppresses an exhaustiveness warning the compiler raises on switch-over-enum
-  // even when all branches return — keeps -Werror happy.
-  @SuppressWarnings("unused")
-  private static EventType ensureEventTypeReferenced() {
-    return EventType.CLASSROOM;
   }
 }
