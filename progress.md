@@ -29,6 +29,50 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.10 (Series 3) — `SoftFlagService` skeleton + dismiss — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- New `softflag.SoftFlagService` (Spring `@Service`):
+  - `insertFlag(orgId, schoolId, entityType, entityId, conflictType, conflictingEntityId, message)` — persists a fresh active flag. Validates all required fields up-front (rejects null orgId/schoolId/entityType/entityId/conflictType, rejects null/blank message). `conflictingEntityId` is orthogonal — required for `DOUBLE_BOOKING`, must be `null` for `HOLIDAY`.
+  - `findActiveByEntity(entityType, entityId)` — wraps `ConflictFlagRepository.findByEntityTypeAndEntityIdAndDismissedFalse`, the partial-index-backed query (V6 migration). Dismissed rows stay in the DB for audit but never appear in default API surface.
+  - `dismiss(flagId, actor)` — marks `dismissed=true` + stamps `dismissed_by_user_id` + `dismissed_at = OffsetDateTime.now()`. **Idempotent**: a second call on an already-dismissed row returns the existing row without invoking `repo.save` and without updating any fields, so the original dismisser/timestamp are preserved.
+- Defense-in-depth authorization on `dismiss`:
+  - `null` actor → `ForbiddenException` (`code=FORBIDDEN`, action=`calendar.softFlag.dismiss`).
+  - `PARENT` role → `ForbiddenException` even though controllers should already have rejected via `policyService.assertCan(actor, "calendar.softFlag.see", ...)`. This way a misconfigured route can't bypass the policy layer.
+  - Unknown flagId → `NotFoundException` (404).
+
+Files changed (count: 2, both new):
+- `src/main/java/com/childcarewow/calendar/softflag/SoftFlagService.java`
+- `src/test/java/com/childcarewow/calendar/softflag/SoftFlagServiceTest.java`
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 33s; bundle gate ≥80% line met.
+- [x] `SoftFlagServiceTest` — 10/10 tests green:
+  - Insert persists every field (DOUBLE_BOOKING with conflicting entity).
+  - Insert allows HOLIDAY without `conflictingEntityId`.
+  - Insert rejects each missing-field combo (orgId, schoolId, entityType, entityId, conflictType, message-null, message-blank — 7 sub-asserts in one test).
+  - `findActive` delegates to the partial-index-backed repo finder.
+  - `findActive` empty result.
+  - Dismiss marks `dismissed=true`, stamps actor + timestamp, persists.
+  - **Dismiss idempotent**: original dismisser preserved on second call; `repo.save` invoked exactly once across two calls.
+  - Dismiss 404s on unknown flag.
+  - Dismiss forbidden for PARENT actor (defense in depth).
+  - Dismiss forbidden for null actor.
+- [x] **100% coverage** on `SoftFlagService`: 0/116 instr, 0/20 branch, 0/28 line, 0/5 method missed (CLAUDE.md § 14 mandate).
+- [x] CI green on PR #62 ([run 25505617384](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25505617384)).
+
+Notes / surprises:
+- Pure Mockito unit tests rather than `@SpringBootTest` — same pattern as `RecurrenceServiceTest` and `PolicyServiceImplTest`. Service has no DB-shape concerns (entity is plain JPA, no `@ColumnTransformer`); behavior is logic over a mockable repo. Suite runs in 8s.
+- The schema does **not** enforce uniqueness on `(entityType, entityId, conflictType)` — multiple HOLIDAY flags for the same entity can coexist. This is intentional: the recompute pattern in 3.11/3.12 will clear-then-reinsert rather than upserting per-key, so duplicates are prevented at the service layer not the schema. The Javadoc on `insertFlag` notes this so callers don't accidentally rely on a uniqueness constraint that isn't there.
+- `dismiss` returns the `ConflictFlag` (not `void`) so controllers can render the dismissed state back to the FE without an extra read. The idempotent path returns the existing in-memory instance from the repo find, which already has the original dismisser/timestamp.
+- Used the parameter-named "Defense in depth" pattern explicitly in the Javadoc — the controller-level `policyService.assertCan` is the primary gate; the service-level checks are a backstop. That pattern lands again in 3.11/3.12 where the recompute paths will need similar guarding (especially the holiday-approve hook which can fan out to thousands of flags).
+
+Next part: 3.11 — `SoftFlagService.recomputeForEvent(eventId)` (bidirectional DOUBLE_BOOKING). On event save: clear all existing DOUBLE_BOOKING flags involving the event (either side); recompute against current overlap detection; insert pairs A↔B for each remaining conflict. Needs an overlap query against the `events` table.
+
+---
+
 ## Part 3.9 (Series 3) — Per-occurrence overrides + skipped filter — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
