@@ -29,6 +29,56 @@ Next part: X.Y+1
 
 ---
 
+## Part 5.4 (Series 5) — `GET /api/v1/events/{id}` + calendar-window query — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- Two read endpoints on `EventController`:
+  - `GET /api/v1/events/{id}` → `EventView` with all join-table arrays + softFlags. **404 (not 403) when the event exists but the actor can't see it** — never leak existence outside visibility scope.
+  - `GET /api/v1/events?schoolId=&from=&to=&type=` → `List<EventView>` for the inclusive `start_dt` window, optional type filter; auth-only at the controller (visibility filter inside the service).
+- `EventRepository.findInWindow(schoolId, from, to, type)`: inclusive bounds, soft-deleted excluded, `(:type IS NULL OR e.type = :type)` pattern for the optional filter. Sorted by `start_dt`.
+- **Role-aware visibility matrix** in `EventService.isVisibleTo`:
+  - **ORG_ADMIN**: any event in their org.
+  - **SCHOOL_ADMIN**: any event in `actor.schoolIds()`.
+  - **STAFF**: SCHOOL events at own schools; CLASSROOM events in own classroomIds; CUSTOM events as organizer OR in `event_attendees`.
+  - **PARENT**: requires `inviteParents=true`, NOT excluded (user-id OR any childStudentId in exclusions), AND child-in-scope: SCHOOL = school in `actor.schoolIds()`; CLASSROOM = at least one childStudentId has `students.classroom_id = event.classroomId` (queried directly via `platformNamedJdbcTemplate`); CUSTOM = at least one childStudentId in `event_students`.
+- Join-table loaders: `loadAttendees`, `loadStudents`, `loadExclusions` read on demand. Both visibility check and view assembly call them; pre-loading once would avoid the duplicate work but adds plumbing — punted to Series 12 perf review.
+- `parentChildInClassroom(actor, classroomId)`: `SELECT COUNT(*) FROM students WHERE id IN (:ids) AND classroom_id = :classroomId AND deleted_at IS NULL`. The platform-DB hop is the only way to bridge the parent's `childStudentIds → classroom_id` mapping (UserPrincipal doesn't carry it).
+
+Files changed (count: 5):
+- `src/main/java/com/childcarewow/calendar/event/{EventController,EventService,EventRepository}.java`
+- `src/test/java/com/childcarewow/calendar/event/EventReadIT.java` — new (15 tests).
+- `docs/openapi.json` — regenerated baseline with the two new GET routes.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 2m14s after the OpenAPI snapshot regen.
+- [x] `EventReadIT` — 15/15 tests green, covering the full visibility matrix:
+  - ORG_ADMIN reads all 3 event types.
+  - SCHOOL_ADMIN: in-school yes, out-of-school 404.
+  - STAFF CLASSROOM/SCHOOL/CUSTOM: each scoped correctly.
+  - PARENT: child's classroom (404 for other classroom).
+  - PARENT `inviteParents=false` → 404.
+  - **PARENT user-excluded** → 404.
+  - **PARENT child-excluded** (student id in exclusions) → 404.
+  - PARENT CUSTOM: child in `event_students` → visible.
+  - Window endpoint: full set for ORG_ADMIN, type filter narrows, parent filter applies.
+  - Unknown id → 404.
+- [x] All earlier 19 EventServiceIT + 4 EventControllerTest tests still green.
+- [x] OpenAPI baseline updated.
+- [x] CI green on PR #90 ([run 25521759578](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25521759578)).
+
+Notes / surprises:
+- **404 vs 403 for "exists but not visible"** is a deliberate security choice: returning 403 confirms the event exists, leaking metadata. 404 is uniform with "doesn't exist". Documented inline; same pattern should apply to read endpoints in Series 6+ (holidays, tasks, etc.).
+- **Parent CLASSROOM visibility hits the platform DB** via `parentChildInClassroom`. UserPrincipal carries `childStudentIds` but NOT each child's classroom — adding it would require loading classroom assignments at JWT-resolve time and updating MeView. Cheaper for now to query on-demand; the Caffeine cache on `PlatformEntityValidator` doesn't help because we need the inverse mapping (student → classroom). Series 11 perf review can revisit.
+- **Loaders called twice per event** (visibility check + view assembly) is wasteful but explicit. Pre-loading once would require keeping a per-event Map<UUID, JoinTables> and threading it through the view builder — punted. Acceptable for read paths because the calendar-window typical size is ~30 events × 3 join tables × 1 round-trip = ~90 SELECTs, all of them at most a few rows. If profiling later flags this, the fix is one batch `WHERE event_id IN (:ids)` per join table. 
+- **STUDENT_VIEW audit on CUSTOM reads** (playbook step 4) NOT yet wired — will land in a follow-up. The `@AuditRead` annotation can't easily express "extract studentIds from CUSTOM events only" via SpEL on a mixed-type response. Likely answer: the service iterates the result, collects student UUIDs from CUSTOM events, calls `auditService.log` directly when non-empty. Tracked.
+- **Window response can grow unboundedly**: no pagination yet. The playbook called for "paginated list" but the FE typically queries one month at a time which naturally caps the result. Adding cursor-based pagination is a Series 6+ task once the FE shadow turns on real traffic.
+
+Next part: 5.5 — `PUT /api/v1/events/{id}` (update flow with policy-bearing `event.edit` action, idempotency, and recompute on date/classroom change).
+
+---
+
 ## Part 5.3 (Series 5) — `POST /api/v1/events` (SCHOOL type + excludedParticipantIds) — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
