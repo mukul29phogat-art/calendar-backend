@@ -1,5 +1,7 @@
 server:
   port: 8080
+  tomcat:
+    max-http-form-post-size: 256KB # body size for non-multipart POSTs (event JSON, etc.)
 
 management:
   endpoints:
@@ -13,6 +15,20 @@ management:
 spring:
   application:
     name: calendar-backend
+  servlet:
+    multipart:
+      max-request-size: 11MB # 1MB headroom over the 10MB attachment limit
+      max-file-size: 10MB
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # RSA public key in PEM format. For tests, src/test/resources provides a fixture key
+          # pair. For real-Supabase deploys (Series 11+), application-{env}.yml overrides with
+          # `jwk-set-uri: ${calendar.auth.supabase-issuer}/.well-known/jwks.json` because
+          # Supabase signs with ES256 not RSA. The playbook spec used `public-key-location` —
+          # honored here for test compatibility; documented as the env-specific deviation.
+          public-key-location: classpath:supabase-jwt-public-key.pem
   jpa:
     # Flyway owns the schema; never let Hibernate generate or update it.
     hibernate:
