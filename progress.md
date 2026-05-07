@@ -29,6 +29,45 @@ Next part: X.Y+1
 
 ---
 
+## Part 1.3 (Series 1) — V4 holidays (named partial unique index for federal upsert) — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `V4__holidays.sql`: holidays table (14 cols, TEXT+CHECK `source` CUSTOM/FEDERAL, bare uuid for platform refs).
+- Two partial unique indexes:
+  - `uq_holiday_school_date_approved` — predicate `WHERE approved=true AND deleted_at IS NULL` ("one approved per (school, date)")
+  - **`uq_holidays_federal_pending`** — predicate `WHERE source='FEDERAL' AND approved=false AND deleted_at IS NULL`. **Named exactly per architecture spec §7.8** because the Phase 6.7 Nager.Date sync upsert references it by name in `ON CONFLICT ON CONSTRAINT`. Renaming would break that contract.
+- Two non-unique supporting partial indexes for read paths.
+- `HolidaySource` enum, `Holiday` entity, `HolidayRepository` in `com.childcarewow.calendar.holiday`.
+- `HolidayRepositoryIT` (4 tests):
+  - `roundTripsCustomHoliday` — exhaustive
+  - `allowsApprovedCustomAlongsidePendingFederalOnSameDate`
+  - `forbidsTwoApprovedHolidaysOnSameDate` (uq_holiday_school_date_approved)
+  - `forbidsTwoPendingFederalsOnSameDate` (uq_holidays_federal_pending)
+
+Files changed (count: 5, all new):
+- `src/main/resources/db/migration/V4__holidays.sql`
+- `src/main/java/com/childcarewow/calendar/holiday/{HolidaySource, Holiday, HolidayRepository}.java`
+- `src/test/java/com/childcarewow/calendar/holiday/HolidayRepositoryIT.java`
+
+Validation:
+- [x] `mvn -B clean verify` → BUILD SUCCESS first try
+- [x] 15 tests run, 2 skipped (FlywayMigrationIT @EnabledOnOs Linux/Mac)
+- [x] JaCoCo: 13 classes, all gates met
+- [x] CI on PR #25: green
+- [x] `mvn flyway:info` → V1+V2+V3+V4 all Success
+- [x] `\d holidays` shows both unique indexes with their partial predicates exactly matching the spec
+- [x] `pg_indexes` confirms `uq_holidays_federal_pending` is spelled exactly as architecture spec § 7.8 references
+
+Notes / surprises (playbook clarification):
+- The playbook's named test #2 (`allowsTwoPendingFederalsOnSameDate`) is **semantically inverted** vs the spec'd schema. The partial index `uq_holidays_federal_pending`'s WHERE clause INCLUDES `approved=false` rows — meaning two pending federals on the same `(school, date)` actually VIOLATE it (which is exactly what the upsert relies on for `ON CONFLICT`). Substituted a semantically-correct test (`allowsApprovedCustomAlongsidePendingFederal`) and added the missing `forbidsTwoPendingFederals` test that actually validates the named index. Net: 4 tests instead of the spec'd 3.
+- Patterns from Parts 1.1 + 1.2 carried forward without surprises.
+
+Next part: **Part 1.4 (Series 1) — V5 important_dates** (BIRTHDAY + IMPORTANT kinds).
+
+---
+
 ## Part 1.2 (Series 1) — V3 recurrence_rules + tasks + task_instance_overrides — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
