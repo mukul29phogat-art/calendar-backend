@@ -123,10 +123,45 @@ public class RecurrenceService {
 
     return switch (rule.getCycle()) {
       case DAILY -> expandDaily(winStart, winEnd);
-      case WEEKLY, MONTHLY ->
-          throw new UnsupportedOperationException(
-              "Cycle " + rule.getCycle() + " not yet implemented (Parts 3.7 / 3.8)");
+      case WEEKLY -> expandWeekly(rule, winStart, winEnd);
+      case MONTHLY ->
+          throw new UnsupportedOperationException("Cycle MONTHLY not yet implemented (Part 3.8)");
     };
+  }
+
+  /**
+   * Walks weeks within {@code [winStart, winEnd]} emitting the date in each week whose day-of-week
+   * matches {@code rule.dueDayOfWeek}. The stored value is JS-flavoured ({@code 0=Sun..6=Sat},
+   * matching the FE prototype's {@code Date.getDay()}); this method maps it to {@link
+   * java.time.DayOfWeek} (1=Mon..7=Sun) before searching.
+   */
+  private static ExpansionResult expandWeekly(
+      RecurrenceRule rule, LocalDate winStart, LocalDate winEnd) {
+    if (rule.getDueDayOfWeek() == null) {
+      throw new InvalidRecurrenceException("WEEKLY cycle requires dueDayOfWeek");
+    }
+    int js = rule.getDueDayOfWeek(); // 0=Sun..6=Sat
+    if (js < 0 || js > 6) {
+      throw new InvalidRecurrenceException("dueDayOfWeek must be in 0..6 (Sun..Sat)");
+    }
+    // 0=Sun -> Java 7=Sun; 1=Mon -> Java 1=Mon; 6=Sat -> Java 6=Sat.
+    java.time.DayOfWeek targetDow = java.time.DayOfWeek.of(js == 0 ? 7 : js);
+
+    // Advance from winStart to the next date whose day-of-week matches targetDow.
+    int delta = (targetDow.getValue() - winStart.getDayOfWeek().getValue() + 7) % 7;
+    LocalDate cursor = winStart.plusDays(delta);
+
+    List<LocalDate> occurrences = new ArrayList<>();
+    boolean truncated = false;
+    while (!cursor.isAfter(winEnd)) {
+      if (occurrences.size() >= MAX_OCCURRENCES) {
+        truncated = true;
+        break;
+      }
+      occurrences.add(cursor);
+      cursor = cursor.plusWeeks(1);
+    }
+    return new ExpansionResult(occurrences, truncated);
   }
 
   private static ExpansionResult expandDaily(LocalDate winStart, LocalDate winEnd) {
@@ -163,6 +198,17 @@ public class RecurrenceService {
     if (rule.getUntilDate().isAfter(taskDueDate.plusYears(MAX_UNTIL_YEARS))) {
       throw new InvalidRecurrenceException(
           "untilDate must be within " + MAX_UNTIL_YEARS + " years of dueDate");
+    }
+    // Cycle-specific shape: WEEKLY needs dueDayOfWeek; MONTHLY (Part 3.8) will need
+    // dueDayOfMonth.
+    if (rule.getCycle() == RecurCycle.WEEKLY) {
+      Short dow = rule.getDueDayOfWeek();
+      if (dow == null) {
+        throw new InvalidRecurrenceException("WEEKLY cycle requires dueDayOfWeek");
+      }
+      if (dow < 0 || dow > 6) {
+        throw new InvalidRecurrenceException("dueDayOfWeek must be in 0..6 (Sun..Sat)");
+      }
     }
   }
 }
