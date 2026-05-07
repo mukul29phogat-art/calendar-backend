@@ -169,12 +169,12 @@ class EventServiceIT {
   }
 
   @Test
-  void rejectsCustomTypeUntil5_2() {
+  void rejectsSchoolTypeUntil5_3() {
     CreateEventRequest req =
         new CreateEventRequest(
-            EventType.CUSTOM,
+            EventType.SCHOOL,
             SUNRISE,
-            "IT-custom",
+            "IT-school",
             null,
             null,
             OffsetDateTime.parse("2026-09-15T14:00:00-04:00"),
@@ -184,7 +184,118 @@ class EventServiceIT {
             false);
     assertThatThrownBy(() -> service.create(req, admin(OLIVIA)))
         .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("not yet supported");
+        .hasMessageContaining("SCHOOL is not yet supported");
+  }
+
+  // -- CUSTOM type ------------------------------------------------------------
+
+  @Test
+  void customEventWithAttendeesAndStudentsWritesJoinTables() {
+    UUID maya = UUID.fromString("33333333-0000-0000-0000-000000000004");
+    UUID tom = UUID.fromString("33333333-0000-0000-0000-000000000005");
+    UUID aanya = UUID.fromString("55555555-0000-0000-0000-000000000001");
+    UUID jordan = UUID.fromString("55555555-0000-0000-0000-000000000002");
+
+    CreateEventRequest req =
+        new CreateEventRequest(
+            EventType.CUSTOM,
+            SUNRISE,
+            "IT-field-trip",
+            "Field trip to the park",
+            null, // CUSTOM doesn't use classroomId
+            OffsetDateTime.parse("2026-09-20T10:00:00-04:00"),
+            OffsetDateTime.parse("2026-09-20T12:00:00-04:00"),
+            false,
+            null,
+            true,
+            java.util.List.of(maya, tom),
+            java.util.List.of(aanya, jordan));
+
+    EventView view = service.create(req, admin(OLIVIA));
+
+    assertThat(view.id()).isNotNull();
+    assertThat(view.type()).isEqualTo(EventType.CUSTOM);
+    assertThat(view.attendeeUserIds()).containsExactlyInAnyOrder(maya, tom);
+    assertThat(view.studentIds()).containsExactlyInAnyOrder(aanya, jordan);
+
+    // Join tables actually populated
+    Integer attendees =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM event_attendees WHERE event_id = ?", Integer.class, view.id());
+    Integer students =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM event_students WHERE event_id = ?", Integer.class, view.id());
+    assertThat(attendees).isEqualTo(2);
+    assertThat(students).isEqualTo(2);
+  }
+
+  @Test
+  void customEventWithEmptyArraysWritesNoJoinRows() {
+    CreateEventRequest req =
+        new CreateEventRequest(
+            EventType.CUSTOM,
+            SUNRISE,
+            "IT-empty-custom",
+            null,
+            null,
+            OffsetDateTime.parse("2026-09-21T10:00:00-04:00"),
+            OffsetDateTime.parse("2026-09-21T11:00:00-04:00"),
+            false,
+            null,
+            false);
+
+    EventView view = service.create(req, admin(OLIVIA));
+    assertThat(view.attendeeUserIds()).isEmpty();
+    assertThat(view.studentIds()).isEmpty();
+
+    Integer attendees =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM event_attendees WHERE event_id = ?", Integer.class, view.id());
+    Integer students =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM event_students WHERE event_id = ?", Integer.class, view.id());
+    assertThat(attendees).isZero();
+    assertThat(students).isZero();
+  }
+
+  @Test
+  void customEventRejectsUnknownAttendee() {
+    CreateEventRequest req =
+        new CreateEventRequest(
+            EventType.CUSTOM,
+            SUNRISE,
+            "IT-bad-attendee",
+            null,
+            null,
+            OffsetDateTime.parse("2026-09-22T10:00:00-04:00"),
+            OffsetDateTime.parse("2026-09-22T11:00:00-04:00"),
+            false,
+            null,
+            false,
+            java.util.List.of(UNKNOWN),
+            java.util.List.of());
+    assertThatThrownBy(() -> service.create(req, admin(OLIVIA)))
+        .isInstanceOf(ValidationException.class);
+  }
+
+  @Test
+  void customEventRejectsUnknownStudent() {
+    CreateEventRequest req =
+        new CreateEventRequest(
+            EventType.CUSTOM,
+            SUNRISE,
+            "IT-bad-student",
+            null,
+            null,
+            OffsetDateTime.parse("2026-09-22T10:00:00-04:00"),
+            OffsetDateTime.parse("2026-09-22T11:00:00-04:00"),
+            false,
+            null,
+            false,
+            java.util.List.of(),
+            java.util.List.of(UNKNOWN));
+    assertThatThrownBy(() -> service.create(req, admin(OLIVIA)))
+        .isInstanceOf(ValidationException.class);
   }
 
   @Test

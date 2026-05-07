@@ -31,6 +31,8 @@ public record EventView(
     UUID createdByUserId,
     OffsetDateTime createdAt,
     OffsetDateTime updatedAt,
+    List<UUID> attendeeUserIds,
+    List<UUID> studentIds,
     List<SoftFlagView> softFlags) {
 
   /** Trimmed flag shape for inline rendering on the event card. */

@@ -12,7 +12,10 @@ import com.childcarewow.calendar.timezone.TimezoneService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
 import java.time.LocalDate;
+import java.util.List;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -34,6 +37,7 @@ public class EventService {
   private final PlatformEntityValidator platformValidator;
   private final SoftFlagService softFlagService;
   private final NotificationService notificationService;
+  private final JdbcTemplate calendarJdbc;
 
   @PersistenceContext private EntityManager em;
 
@@ -42,12 +46,14 @@ public class EventService {
       TimezoneService timezoneService,
       PlatformEntityValidator platformValidator,
       SoftFlagService softFlagService,
-      NotificationService notificationService) {
+      NotificationService notificationService,
+      @Qualifier("calendarJdbcTemplate") JdbcTemplate calendarJdbc) {
     this.eventRepo = eventRepo;
     this.timezoneService = timezoneService;
     this.platformValidator = platformValidator;
     this.softFlagService = softFlagService;
     this.notificationService = notificationService;
+    this.calendarJdbc = calendarJdbc;
   }
 
   @Transactional
@@ -70,6 +76,16 @@ public class EventService {
     if (req.organizerUserId() != null) {
       platformValidator.assertUserExists(req.organizerUserId());
     }
+    // CUSTOM-only: validate every attendee + student id exists in the platform DB. Caches handle
+    // the per-id round-trip cost; for batches > 50 ids consider a single IN-list query later.
+    if (req.type() == EventType.CUSTOM) {
+      for (UUID userId : req.attendeeUserIds()) {
+        platformValidator.assertUserExists(userId);
+      }
+      for (UUID studentId : req.studentIds()) {
+        platformValidator.assertStudentExists(studentId);
+      }
+    }
 
     Event event = new Event();
     event.setOrgId(actor.orgId());
@@ -88,17 +104,45 @@ public class EventService {
     Event saved = eventRepo.saveAndFlush(event);
     // Refresh so DB-managed columns (created_at, updated_at) are populated for the response.
     em.refresh(saved);
+    UUID eventId = saved.getId();
+
+    // CUSTOM-only: insert into the calendar-owned join tables. CASCADE delete is set on the FK
+    // to events(id) so deleting the event later cleans these up automatically.
+    if (req.type() == EventType.CUSTOM) {
+      insertAttendees(eventId, req.attendeeUserIds());
+      insertStudents(eventId, req.studentIds());
+    }
 
     // Soft-flag recompute (DOUBLE_BOOKING bidirectional). Always runs, even if no overlaps —
     // it'll just clear-and-rebuild to the same state. Cheap when there's nothing in scope.
-    softFlagService.recomputeForEvent(saved.getId());
+    softFlagService.recomputeForEvent(eventId);
 
     // Stub until 5.8.
     notificationService.dispatchEventCreated(saved);
 
-    UUID eventId = saved.getId();
     return EventMapper.toView(
-        saved, softFlagService.findActiveByEntity(FlaggedEntity.EVENT, eventId));
+        saved,
+        req.type() == EventType.CUSTOM ? List.copyOf(req.attendeeUserIds()) : List.of(),
+        req.type() == EventType.CUSTOM ? List.copyOf(req.studentIds()) : List.of(),
+        softFlagService.findActiveByEntity(FlaggedEntity.EVENT, eventId));
+  }
+
+  private void insertAttendees(UUID eventId, List<UUID> userIds) {
+    if (userIds.isEmpty()) {
+      return;
+    }
+    calendarJdbc.batchUpdate(
+        "INSERT INTO event_attendees (event_id, user_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+        userIds.stream().map(uid -> new Object[] {eventId, uid}).toList());
+  }
+
+  private void insertStudents(UUID eventId, List<UUID> studentIds) {
+    if (studentIds.isEmpty()) {
+      return;
+    }
+    calendarJdbc.batchUpdate(
+        "INSERT INTO event_students (event_id, student_id) VALUES (?, ?) ON CONFLICT DO NOTHING",
+        studentIds.stream().map(sid -> new Object[] {eventId, sid}).toList());
   }
 
   // -- validation -------------------------------------------------------------
@@ -113,12 +157,13 @@ public class EventService {
     if (req.type() == EventType.CLASSROOM && req.classroomId() == null) {
       throw new ValidationException("classroomId", "classroomId is required for CLASSROOM events");
     }
-    if (req.type() != EventType.CLASSROOM) {
-      // Part 5.1 covers CLASSROOM only — surface a clear error for early callers who try CUSTOM
-      // or SCHOOL before 5.2/5.3 land. Better than a confusing partial impl.
+    if (req.type() == EventType.SCHOOL) {
+      // SCHOOL with excludedParticipantIds lands in Part 5.3.
       throw new ValidationException(
-          "type",
-          "Event type " + req.type() + " is not yet supported (Part 5.1 covers CLASSROOM only)");
+          "type", "Event type SCHOOL is not yet supported (lands in Part 5.3)");
+    }
+    if (req.type() != EventType.CLASSROOM && req.type() != EventType.CUSTOM) {
+      throw new ValidationException("type", "Unknown event type: " + req.type());
     }
   }
 }
