@@ -29,6 +29,41 @@ Next part: X.Y+1
 
 ---
 
+## Part 3.2 (Series 3) — PolicyService — full 19-action catalog + Event/Task overloads — STATUS: ✅ done
+Date: 2026-05-07
+Operator: Mukul Phogat
+
+What got built:
+- `policy.PolicyService` interface gained two resource-bearing overloads: `can(UserPrincipal, String, Event)` and `can(UserPrincipal, String, Task)`, plus default `assertCan(...)` overloads that throw `ForbiddenException` carrying the action string.
+- `policy.PolicyServiceImpl` now implements all 19 actions from `src/lib/services/policyService.ts:53-121`:
+  - **Resource-less (15)**: `event.create`, `event.create.schoolType`, `task.view`, `task.create`, `task.viewAllScope`, `holiday.manage`, `holiday.approve`, `importantDate.manage`, `calendar.softFlag.see`, `addMenu.{show,event,task,holiday,importantDate}`, `notifications.see`.
+  - **Resource-bearing (Event)**: `event.edit`, `event.delete`. ORG_ADMIN always allowed; SCHOOL_ADMIN scoped to `actor.schoolIds`; STAFF type-specific — CLASSROOM requires classroom membership, CUSTOM requires school membership, SCHOOL denied; PARENT denied.
+  - **Resource-bearing (Task)**: `task.edit`, `task.delete`. ORG_ADMIN always; SCHOOL_ADMIN school-scoped; STAFF only when `assigneeUserId == actor.id`; PARENT denied.
+- Defensive: resource-bearing actions called via the no-resource `can(actor, action)` return `false`. `null` actor / `null` resource always denies.
+- `PolicyServiceImplTest`: 72 tests across 8 test methods. ~53 parameterized rows in `resourceLessActions` covering 15 actions × 4 roles, plus targeted resource-bearing event tests (6), resource-bearing task tests (5), edge cases (null actor, null resource, unknown action, defensive false on resource-less call), and assertCan throws/silent overloads.
+
+Files changed (count: 3):
+- `src/main/java/com/childcarewow/calendar/policy/PolicyService.java` — added Event + Task overloads + their assertCan defaults; expanded Javadoc with the 19-action catalog.
+- `src/main/java/com/childcarewow/calendar/policy/PolicyServiceImpl.java` — full action switch + `canModifyEvent` + `canModifyTask` helpers + null guards.
+- `src/test/java/com/childcarewow/calendar/policy/PolicyServiceImplTest.java` — expanded from 13 cases to 72.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 26.8s; bundle gate (≥80% line) met.
+- [x] `mvn test -Dtest=PolicyServiceImplTest` — 72 tests, 0 failures, 0 errors, 0.467s.
+- [x] JaCoCo per-class on `PolicyServiceImpl`: `0/188 instructions, 0/51 branches, 0/42 lines, 0/8 methods` missed → **100%** (CLAUDE.md § 14 mandate met).
+- [x] CI green on PR #46 ([run 25499456638](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25499456638)).
+- [x] Squash-merged to `main` as commit `6d0fddd`.
+
+Notes / surprises:
+- The first push attempt committed PolicyService.java + PolicyServiceImpl.java but the test rewrite silently no-op'd because `Write` requires a prior `Read` on existing files (the original 82-line Part 3.1 test file was still on disk and Spotless/Surefire happily ran the old 13 cases against the new 19-action impl, which still passed because the 3 actions Part 3.1 already covered are a strict subset of Part 3.2's catalog and the bundle-gate is 80% not 100%). Fix: explicit Read → Write → second commit on the same branch. Lesson: never trust a Write tool result for an existing file unless you've Read it in the same session.
+- Initial impl included a placeholder `ensureEventTypeReferenced()` static method intended to ward off an exhaustiveness warning. It was dead code (no warning would have triggered) and left coverage at 7/8 methods. Dropped in the second commit.
+- Cause-aware `ServiceException(message, cause)` constructor pattern from Part 3.0 paid off here — `ForbiddenException(action)` carries the action string cleanly without `initCause()` "this-escape" warnings.
+- Git identity was missing from local config; commits went through via per-invocation `GIT_AUTHOR_*` / `GIT_COMMITTER_*` env vars to avoid mutating git config (per CLAUDE.md guard).
+
+Next part: 3.3 — `AuditService` + `@Auditable` AOP aspect.
+
+---
+
 ## Part 3.1 (Series 3) — PolicyService skeleton + first 3 actions — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
