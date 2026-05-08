@@ -374,6 +374,27 @@ public class EventService {
         .orElseThrow(() -> new com.childcarewow.calendar.exception.NotFoundException("Event", id));
   }
 
+  /**
+   * Soft-deletes the event. Cleans up the bidirectional DOUBLE_BOOKING flag pair (so the OTHER end
+   * of any overlap loses its flag too) and dispatches a CANCEL notification stub. Join-table rows
+   * (attendees, students, exclusions) are left intact — their event row is now soft-deleted so
+   * they're invisible to all read paths, and the FK has ON DELETE CASCADE so a future hard-delete
+   * sweep cleans them up automatically.
+   */
+  @Transactional
+  public void delete(UUID id) {
+    Event existing =
+        eventRepo
+            .findById(id)
+            .filter(e -> e.getDeletedAt() == null)
+            .orElseThrow(
+                () -> new com.childcarewow.calendar.exception.NotFoundException("Event", id));
+    existing.setDeletedAt(java.time.OffsetDateTime.now());
+    eventRepo.saveAndFlush(existing);
+    softFlagService.removeFlagsForEvent(id);
+    notificationService.dispatchEventDeleted(existing);
+  }
+
   @Transactional
   public EventView create(CreateEventRequest req, UserPrincipal actor) {
     validateRequest(req);
