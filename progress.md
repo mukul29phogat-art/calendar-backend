@@ -29,6 +29,104 @@ Next part: X.Y+1
 
 ---
 
+## Series 6 progress (Parts 6.1 → 6.6) — holidays backend (deferring FE cutover) — STATUS: ✅ done
+Date: 2026-05-08
+Operator: Mukul Phogat
+
+Six PRs landed in one session, **same per-part code-and-test rhythm as Series 5.6+** (no per-part progress.md PRs; this is the consolidated hand-off). Parts 6.2a/6.2b/6.9 (frontend cutover) **deferred** — they require operator visual side-by-side compare and live in Events_CCW, not this repo. The backend halves of those parts are not blocked: subsequent backend parts (6.3, 6.4, 6.5, 6.6) ran cleanly without the FE shadow infrastructure in place.
+
+### Part 6.1 — `POST /api/v1/holidays` (CUSTOM)
+
+What got built:
+- New `holiday/CreateHolidayRequest`, `HolidayView`, `HolidayService`, `HolidayController`. `HolidayRepository.findApprovedAt(schoolId, date)` query with `approved=true && deleted_at IS NULL` filter.
+- `policy.assertCan(actor, "holiday.manage")` gate (Part 3.2 wired this for ADMIN roles).
+- `platformValidator.assertSchoolExists(req.schoolId())` — fail-closed if platform DB can't confirm.
+- Duplicate check throws `DuplicateHolidayException` (409) ahead of unique-index violation. Unapproved-federal rows on the same date are allowed to coexist; the duplicate rule scopes to `approved=true` per playbook line 2719.
+- Insert with `source=CUSTOM, approved=true, approvedAt=now(), approvedByUserId=actor.id()` — CUSTOM auto-approves at creation per playbook common-failure-point line 2732.
+- `saveAndFlush + em.refresh` to populate created_at/updated_at, then `softFlagService.recomputeForHoliday(saved)` inserts retroactive HOLIDAY flags on pre-existing events/tasks on that date.
+- `@Audited("HOLIDAY_CREATE", targetType="HOLIDAY")`.
+
+Tests: `HolidayCreateIT` (3) — happy path + duplicate-409 + retroactive flag inserted with name in message. PR #98 merged.
+
+### Part 6.2 — `GET /api/v1/holidays` + `GET /api/v1/holidays/{id}`
+
+What got built:
+- `HolidayRepository.findFiltered(schoolId, approved, source)` — nullable filters via `IS NULL OR =` idiom; orders by `date ASC`; always excludes soft-deleted.
+- List visibility:
+  - **PARENT clamp**: even if the query asks `approved=false`, the service forces `approved=true` unconditionally per playbook line 2754. Federal-pending rows must never leak to parents.
+  - **STAFF/ADMIN**: query params honored as-is.
+  - School scope: ORG_ADMIN sees any school in their org; school-scoped roles only see their own → cross-school requests return 403 (not silent empty list — fail loud so FE bugs are visible).
+- Detail (`findById`) hides unapproved-federal rows from parents as **404 not 403** to avoid leaking existence.
+
+Tests: `HolidayReadIT` (12) — full role × filter matrix + cross-school 403 + 404 cases. PR #99 merged.
+
+### Part 6.3 — `PUT /api/v1/holidays/{id}` + `DELETE /api/v1/holidays/{id}`
+
+What got built:
+- PUT: validates name/notes/date; `source`, `approved`, and `schoolId` are intentionally immutable (playbook common-failure-point line 2820 — those go through the approve endpoint and federal sync only). Date-change duplicate check via `findApprovedAt` with `id != self` predicate. `softFlagService.recomputeForHoliday` runs unconditionally — name change rewrites the flag message; date change shifts flags between events.
+- DELETE: soft-delete via `deletedAt = now()`. New `softFlagService.removeFlagsForHoliday(holidayId)` method (distinct from `recomputeForHoliday` so the delete path doesn't re-insert flags).
+- Both gated by `holiday.manage`.
+
+Tests: `HolidayUpdateDeleteIT` (9) — rename, date-move shifts flags, name-change rewrites flag message, schoolId immutable, date-collision → 409, unknown-id → 404, soft-delete clears flags, double-delete → 404. PR #100 merged.
+
+### Part 6.4 — `POST /api/v1/holidays/{id}/approve`
+
+What got built:
+- Approves a federal-pending holiday → flips `approved=true`, sets `approvedAt`/`approvedByUserId`, fires `recomputeForHoliday` so pre-existing events on that date get HOLIDAY flags.
+- **Idempotent**: re-approving an already-approved row returns the existing view without mutating `approvedAt` or re-running recompute.
+- **Pre-check**: per playbook common-failure-point line 2843, if a different already-approved holiday occupies `(school_id, date)`, throws `DuplicateHolidayException` (409) **ahead** of the unique-index `uq_holidays_federal_pending` violation. Self-match excluded via `id != self`.
+- Soft-deleted rows surface as 404.
+- `@Audited("HOLIDAY_APPROVE")`.
+
+Tests: `HolidayApproveIT` (5) — approve fires recompute; idempotent (approvedAt unchanged); date-collision → 409; unknown id → 404; soft-deleted → 404. PR #101 merged.
+
+### Part 6.5 — `POST /api/v1/holidays/approve-batch`
+
+What got built:
+- Bulk approval with **per-row failure isolation**. One row's exception (NOT_FOUND, DUPLICATE_HOLIDAY, etc.) does NOT roll back the rest.
+- **Per-row transactions via self-injection**: the batch method itself is intentionally NOT `@Transactional`; each id runs through `@Lazy`-injected `self.approve(id, actor)` which goes back through the Spring proxy. REQUIRED propagation creates a new tx for each id since the outer batch method has none. Calling `this.approve(...)` from the loop would skip the proxy and the inner `@Transactional` would have no effect — leaving the loop in an inconsistent state if one id fails.
+- Bean validation: `@NotEmpty + @Size(max=100)` on the ids list. Over-cap returns 400 `VALIDATION_ERROR` via `GlobalExceptionHandler` before any DB work runs (playbook line 2855).
+- New `ApproveBatchRequest` + `ApproveBatchResult` DTOs. `Result.skipped` carries `(id, reason)` per skipped row. Reasons: `NOT_FOUND`, `DUPLICATE_HOLIDAY`, `FORBIDDEN`, plus a bonus `ALREADY_APPROVED` distinguishing "approved this run" from "was already approved" (the latter doesn't bump `approved` count).
+
+Tests: `HolidayApproveBatchIT` (5) — mixed batch (3 valid + 1 not-found + 1 duplicate); already-approved skip counts toward skipped not approved; per-row tx isolation (failure between two valids doesn't roll them back); empty list returns zero-result at service layer; 101 ids run at service layer (cap enforced at controller). PR #102 merged.
+
+### Part 6.6 — `GET /holidays?source=FEDERAL&approved=false` query path verification
+
+What got built:
+- Test-only PR. Pins the specific query path used by the federal-approval panel.
+- Covers the playbook common-failure-point line 2885: soft-deleted federals must NOT leak.
+
+Tests: `PendingFederalListIT` (4) — ORG_ADMIN sees both pending federals (excluding approved + pending CUSTOM + soft-deleted); ORG_ADMIN at other school works; SCHOOL_ADMIN cross-school 403; PARENT clamp fires on this query path. PR #103 merged.
+
+### Cross-cutting findings
+
+- **`SoftFlagService.removeFlagsForHoliday(UUID)` was added in 6.3** — it wraps the existing `repo.deleteHolidayFlagsForHoliday` helper. Distinct from `recomputeForHoliday` so the holiday delete path doesn't re-insert flags it just deleted.
+- **Self-injection idiom in 6.5** is now the precedent for any future batch operation that needs per-row tx isolation. Pattern: `@Lazy private final ServiceClass self;` constructor-injected; loop calls `self.method(...)` instead of `this.method(...)`.
+- **Idempotency strategy** for batch operations: pre-check status with non-tx fetch BEFORE invoking the per-row tx, so we can distinguish "did work" from "was already in target state" without an extra round-trip inside the tx.
+
+### Validation (whole sub-series)
+
+- [x] `mvn -B clean verify` after each part — all green. Final after 6.6: 186 tests, 2 skipped (Linux-only Testcontainers ITs), JaCoCo bundle ≥80%, Spotless clean. ~3min wall.
+- [x] OpenAPI snapshot regenerated after each schema-changing part (6.1, 6.2, 6.3, 6.4, 6.5).
+- [x] CI green on PRs #98 / #99 / #100 / #101 / #102 / #103 (~1m30s each).
+- [x] Branch protection respected — squash merges on `main`.
+
+### Carry-forward (new from this batch)
+
+- **Parts 6.2a/6.2b/6.9 (FE cutover) deferred** — they require operator visual side-by-side compare. The backend half of 6.2a (the `/diagnostics/shadow-diff` endpoint) was deliberately not built standalone; the FE half is more substantive and the operator should land both in one session. Doesn't block backend.
+- **Part 6.7 (Nager.Date sync job)** — meaty next part: scheduled `RestClient`, idempotent upsert via `uq_holidays_federal_pending`, ShedLock for multi-instance ECS deploys (playbook line 2923). Worth its own session.
+- **Part 6.8 (notification pause verification)** — in-place test using fixtures from 6.1 + 5.8.
+- **Existing carry-forwards still open** (unchanged from Series 5 entry): Node 20 deprecation, Part 0.8 config externalization, MapStruct adoption, AttachmentController slice, ShedLock for IdempotencyPurgeJob, FE codegen Part 4.6, COPPA-blocking CUSTOM recipient narrowing (5.8).
+
+### Counts after Series 6 (so far)
+
+- 57 PRs merged total (50 entering this batch + 7 today: 6 code + 1 progress.md doc earlier).
+- Backend Parts complete: P0.* + Series 0–4 + Series 5 (8/9; 5.9 deferred) + Series 6 (6/9; 6.2a/6.2b/6.9 FE-deferred; 6.7/6.8 next).
+
+Next part: **6.7 — Nager.Date scheduled sync job**.
+
+---
+
 ## Series 5 close (Parts 5.6 → 5.8) — events backend complete — STATUS: ✅ done
 Date: 2026-05-08
 Operator: Mukul Phogat
