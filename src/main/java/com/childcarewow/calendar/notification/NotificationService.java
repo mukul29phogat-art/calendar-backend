@@ -47,4 +47,12 @@ public class NotificationService {
         prev == null ? null : prev.getTitle(),
         next.getTitle());
   }
+
+  /** No-op until Part 5.8. The real impl will queue CANCEL notifications to invitees. */
+  public void dispatchEventDeleted(Event event) {
+    if (event == null) {
+      return;
+    }
+    log.debug("[stub] dispatchEventDeleted event={} title={}", event.getId(), event.getTitle());
+  }
 }
