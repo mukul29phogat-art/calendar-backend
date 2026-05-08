@@ -174,4 +174,42 @@ public class HolidayService {
     holidayRepo.saveAndFlush(existing);
     softFlagService.removeFlagsForHoliday(id);
   }
+
+  /**
+   * Approves a federal-pending holiday. Idempotent: re-approving an already-approved row returns
+   * the existing view without re-running recompute (which would still be safe but is wasteful). If
+   * a different already-approved holiday already occupies the {@code (school_id, date)} slot,
+   * throws {@link DuplicateHolidayException} ahead of the unique-index violation per playbook line
+   * 2843.
+   */
+  @Transactional
+  public HolidayView approve(UUID id, UserPrincipal actor) {
+    Holiday existing =
+        holidayRepo
+            .findById(id)
+            .filter(h -> h.getDeletedAt() == null)
+            .orElseThrow(() -> new NotFoundException("Holiday", id));
+
+    if (existing.isApproved()) {
+      return HolidayView.fromEntity(existing);
+    }
+
+    if (holidayRepo
+        .findApprovedAt(existing.getSchoolId(), existing.getDate())
+        .filter(h -> !h.getId().equals(id))
+        .isPresent()) {
+      throw new DuplicateHolidayException(existing.getDate());
+    }
+
+    existing.setApproved(true);
+    existing.setApprovedAt(OffsetDateTime.now());
+    existing.setApprovedByUserId(actor.id());
+
+    Holiday saved = holidayRepo.saveAndFlush(existing);
+    em.refresh(saved);
+
+    softFlagService.recomputeForHoliday(saved);
+
+    return HolidayView.fromEntity(saved);
+  }
 }
