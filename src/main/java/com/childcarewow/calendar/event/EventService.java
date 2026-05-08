@@ -273,8 +273,9 @@ public class EventService {
     if (startMoved) {
       LocalDate startSchoolLocal =
           timezoneService.toSchoolLocalDate(req.startDt().toInstant(), req.schoolId());
-      if (timezoneService.isHolidayForSchool(req.schoolId(), startSchoolLocal)) {
-        throw new EventOnHolidayException(startSchoolLocal.toString());
+      String holidayName = findApprovedHolidayName(req.schoolId(), startSchoolLocal);
+      if (holidayName != null) {
+        throw new EventOnHolidayException(holidayName);
       }
     }
 
@@ -365,6 +366,21 @@ public class EventService {
     return s;
   }
 
+  /**
+   * Returns the name of an approved holiday at the school on the given school-local date, or {@code
+   * null} when no holiday blocks. Replaces the old plain {@code isHolidayForSchool} call so the
+   * {@link EventOnHolidayException} message can carry the holiday name for the FE to render.
+   */
+  private String findApprovedHolidayName(UUID schoolId, LocalDate localDate) {
+    return calendarJdbc.query(
+        "SELECT name FROM holidays "
+            + "WHERE school_id = ? AND date = ? AND approved = true AND deleted_at IS NULL "
+            + "LIMIT 1",
+        rs -> rs.next() ? rs.getString(1) : null,
+        schoolId,
+        localDate);
+  }
+
   /** Loads an event for the controller's pre-update policy gate. 404 if missing or soft-deleted. */
   @Transactional(readOnly = true)
   public Event loadForPolicyCheck(UUID id) {
@@ -402,8 +418,9 @@ public class EventService {
     // Holiday check uses the school's timezone, NOT UTC date (architecture spec § 3 / § 7.6).
     LocalDate startSchoolLocal =
         timezoneService.toSchoolLocalDate(req.startDt().toInstant(), req.schoolId());
-    if (timezoneService.isHolidayForSchool(req.schoolId(), startSchoolLocal)) {
-      throw new EventOnHolidayException(startSchoolLocal.toString());
+    String holidayName = findApprovedHolidayName(req.schoolId(), startSchoolLocal);
+    if (holidayName != null) {
+      throw new EventOnHolidayException(holidayName);
     }
 
     // Platform-side existence checks (school + classroom). Caches inside PlatformEntityValidator.
