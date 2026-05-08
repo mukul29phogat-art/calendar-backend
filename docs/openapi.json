@@ -267,6 +267,34 @@
         }
       }
     },
+    "/api/v1/holidays/approve-batch" : {
+      "post" : {
+        "tags" : [ "holiday-controller" ],
+        "operationId" : "approveBatch",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/ApproveBatchRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ApproveBatchResult"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/events" : {
       "get" : {
         "tags" : [ "event-controller" ],
@@ -784,6 +812,48 @@
             "format" : "uuid"
           },
           "message" : {
+            "type" : "string"
+          }
+        }
+      },
+      "ApproveBatchRequest" : {
+        "required" : [ "ids" ],
+        "type" : "object",
+        "properties" : {
+          "ids" : {
+            "maxItems" : 100,
+            "minItems" : 0,
+            "type" : "array",
+            "items" : {
+              "type" : "string",
+              "format" : "uuid"
+            }
+          }
+        }
+      },
+      "ApproveBatchResult" : {
+        "type" : "object",
+        "properties" : {
+          "approved" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "skipped" : {
+            "type" : "array",
+            "items" : {
+              "$ref" : "#/components/schemas/Skip"
+            }
+          }
+        }
+      },
+      "Skip" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "reason" : {
             "type" : "string"
           }
         }

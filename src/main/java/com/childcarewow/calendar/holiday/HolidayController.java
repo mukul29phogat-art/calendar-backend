@@ -93,4 +93,17 @@ public class HolidayController {
     policy.assertCan(actor, "holiday.approve");
     return service.approve(id, actor);
   }
+
+  /**
+   * Bulk approval of federal-pending holidays. Per-row isolation: one row's failure (NOT_FOUND,
+   * DUPLICATE_HOLIDAY, etc.) doesn't roll back the rest. Cap at 100 ids per playbook line 2855 —
+   * over-cap returns 400 VALIDATION_ERROR before any work runs.
+   */
+  @PostMapping("/approve-batch")
+  @Audited(action = "HOLIDAY_APPROVE_BATCH", targetType = "HOLIDAY")
+  public ApproveBatchResult approveBatch(
+      @AuthenticationPrincipal UserPrincipal actor, @Valid @RequestBody ApproveBatchRequest req) {
+    policy.assertCan(actor, "holiday.approve");
+    return service.approveBatch(req.ids(), actor);
+  }
 }
