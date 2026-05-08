@@ -1,6 +1,7 @@
 package com.childcarewow.calendar.holiday;
 
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -18,4 +19,17 @@ public interface HolidayRepository extends JpaRepository<Holiday, UUID> {
       "SELECT h FROM Holiday h WHERE h.schoolId = :schoolId AND h.date = :date "
           + "AND h.approved = true AND h.deletedAt IS NULL")
   Optional<Holiday> findApprovedAt(UUID schoolId, LocalDate date);
+
+  /**
+   * Filtered list query for {@code GET /api/v1/holidays}. {@code approved} and {@code source} are
+   * nullable — null skips the filter. Always excludes soft-deleted rows. Ordered by date ascending
+   * for stable pagination/UX.
+   */
+  @Query(
+      "SELECT h FROM Holiday h WHERE h.schoolId = :schoolId "
+          + "AND h.deletedAt IS NULL "
+          + "AND (:approved IS NULL OR h.approved = :approved) "
+          + "AND (:source IS NULL OR h.source = :source) "
+          + "ORDER BY h.date ASC")
+  List<Holiday> findFiltered(UUID schoolId, Boolean approved, HolidaySource source);
 }
