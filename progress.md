@@ -29,6 +29,83 @@ Next part: X.Y+1
 
 ---
 
+## Series 5 close (Parts 5.6 → 5.8) — events backend complete — STATUS: ✅ done
+Date: 2026-05-08
+Operator: Mukul Phogat
+
+Per-part progress entries were rolled into this single hand-off (operator agreement, mid-series). Three PRs landed (one per part); no per-part progress.md PR was opened. **Part 5.9 is deferred** to 6.2a/6.2b (post-holidays GET) per playbook line 2691.
+
+### Part 5.6 — `DELETE /api/v1/events/{id}` (soft-delete)
+
+What got built:
+- `EventService.delete(UUID)` — fetches with `deletedAt == null` filter, sets `deletedAt = now()`, `saveAndFlush`, then `softFlagService.removeFlagsForEvent` + `notificationService.dispatchEventDeleted`. Both directions of bidirectional DOUBLE_BOOKING flags clear because `removeFlagsForEvent` deletes by `entity_id = ? OR conflicting_entity_id = ?`.
+- `EventController.delete` — `@DeleteMapping("/{id}")`, 204 No Content, `@Audited(action="EVENT_DELETE")`. Loads via `loadForPolicyCheck` then `policy.assertCan(actor, "event.delete", existing)` — same shape as Part 5.5.
+- `EventDeleteIT` (4 tests): soft-deletes-and-excludes-from-reads (findById 404 + deleted_at populated + window query excludes); deleteClearsBidirectionalDoubleBookingFlags (verifies the OR predicate clears both A→B and B→A rows); unknownIdReturns404; doubleDeleteReturns404 (second delete sees deletedAt-filtered row → 404).
+
+Files: `EventService.java`, `EventController.java`, `EventDeleteIT.java` (new). PR #94, merged.
+
+### Part 5.7 — Holiday-blocks-event-creation enforcement
+
+What got built:
+- `EventService.findApprovedHolidayName(schoolId, localDate)` — replaces the boolean `isHolidayForSchool` with a name-returning helper so the thrown `EventOnHolidayException` can carry the actual holiday name (e.g. "Christmas Day") instead of a date string. Filter: `approved = true AND deleted_at IS NULL`.
+- Create + update paths both call this helper after computing `TimezoneService.toSchoolLocalDate(startDt, schoolId)`. Failing match → `throw new EventOnHolidayException(name)` → 409 envelope.
+- `HolidayBlockIT` (4 tests): approvedHolidayBlocksCreationWithExceptionCarryingName (asserts message contains the holiday name); sameDateAtDifferentSchoolIsAllowed (Sunrise blocks but Maplewood passes — proves the school_id scoping); unapprovedHolidayDoesNotBlock (federal-pending state must not block — `approved=false` row inserted via raw JDBC); softDeletedHolidayDoesNotBlock (`deleted_at not null` excluded by the helper).
+
+Files: `EventService.java`, `HolidayBlockIT.java` (new). PR #95, merged.
+
+Notes / surprises:
+- The existing `EventServiceIT` already had a "blocks on approved holiday" test from Part 5.1; that test stays green (the date-string message form was loose enough to still match). HolidayBlockIT adds the four tighter cases.
+- Holidays controller doesn't exist yet (Part 6.1) so all fixtures use raw `INSERT INTO holidays` SQL.
+
+### Part 5.8 — `NotificationService` writes EVENT_INVITE/UPDATED/CANCELLED rows
+
+What got built:
+- Replaced the Series 5.1 stubs with real writes against `notifications` + `notification_recipients` (architecture spec § 7.4). The service stops at the row write — actual email/push delivery is Series 11.
+- Three public dispatchers:
+  - `dispatchEventCreated` → `EVENT_INVITE` when `inviteParents=true`.
+  - `dispatchEventUpdated(prev, next)` → off→on=`EVENT_INVITE`, on→off=`EVENT_CANCELLED`, on→on=`EVENT_UPDATED`, off→off=no-op.
+  - `dispatchEventDeleted` → `EVENT_CANCELLED` when the deleted event had invitees.
+- Type-specific recipient resolution against the platform DB:
+  - `SCHOOL` → `users.role='PARENT' JOIN user_schools` for the school.
+  - `CLASSROOM` → `student_parents JOIN students` filtered by `classroom_id` and `s.deleted_at IS NULL`.
+  - `CUSTOM` → coarse "parents at school" rule. **Flagged COPPA-blocking** in the resolver javadoc — Part 12.4 narrows to `event_students`. Until then, `excludedParticipantIds` is the only knob to restrict.
+- Excluded participants subtract from the base set: `USER` ids directly; `STUDENT` ids resolved to parent user_ids via `student_parents WHERE student_id IN (:ids)`.
+- Holiday-pause check via `TimezoneService.toSchoolLocalDate` then `SELECT name FROM holidays WHERE approved=true AND deleted_at IS NULL`. Non-null match → notification row is still written but with `paused=true` + `pausedReason="Holiday: <name>"` and the message prefixed `[paused: ...]`. Recipients are still inserted so a future unpause job can flip the flag without rebuilding the recipient set.
+- `NotificationDispatchIT` (9 tests): SCHOOL writes parents-at-school; CLASSROOM writes parents-of-students-in-classroom (Butterflies → Priya only, since Caterpillars' Jordan has no parent linked in seed); inviteParents=false writes nothing; excluded user_id subtracts directly; excluded student_id subtracts that student's parents (Maplewood + exclude Lila → Daniel drops out → no recipients → no row); off→on writes EVENT_INVITE; on→off writes EVENT_CANCELLED; on→on edit writes EVENT_UPDATED; delete with invitees writes EVENT_CANCELLED.
+
+Files: `NotificationService.java` (rewritten — was a stub since 5.1), `NotificationDispatchIT.java` (new). PR #96, merged.
+
+Notes / surprises:
+- "No recipients → no row" is an intentional shortcut: if the resolved recipient set is empty (e.g. all excluded), `writeWithRecipients` early-returns without writing the parent `notifications` row. Tests rely on this (`excludedUserIdSubtractsFromRecipients` asserts `countNotifications == 0`). If FE later wants to render "this event was created but had nobody to notify," we'll need to flip the contract.
+- `paused` is a column on `notifications`, not on `notification_recipients`. One row covers all recipients of one event-event for that pause.
+
+### Validation (whole sub-series)
+
+- [x] `mvn -B clean verify` after each part — all green. Final run after 5.8: 148 tests, 2 skipped (Linux-only Testcontainers ITs), JaCoCo bundle ≥80%, Spotless clean. ~3m22s wall.
+- [x] OpenAPI snapshot unchanged across 5.6/5.8 (DELETE in 5.6 added one operation; pinned snapshot updated mid-PR).
+- [x] CI green on PRs #94 / #95 / #96 (~1m30s each).
+- [x] Branch protection respected — squash merges on `main`.
+
+### Carry-forward (none new from these three parts)
+
+- Bump GitHub Actions versions before Node 20 deprecation (2026-09-16).
+- Application config externalization — Part 0.8.
+- STUDENT_VIEW audit on CUSTOM event reads — deferred from 5.4.
+- MapStruct adoption when Series 6+ has 3+ mappers.
+- AttachmentController slice + Supabase live integration — Series 11.4.
+- ShedLock for `IdempotencyPurgeJob` — Series 11.4.
+- Frontend codegen Part 4.6 (FE repo).
+- **NEW (5.8):** narrow `CUSTOM` notification recipients to `event_students` roster — tracked as Part 12.4.
+
+### Counts after Series 5 backend
+
+- 50 PRs merged total (47 entering this batch + 3 today).
+- Backend Parts complete: P0.* + Series 0–4 fully + Series 5 Parts 5.1 → 5.8 (5.9 deferred to 6.2a/6.2b).
+
+Next part: **6.1 — `POST /api/v1/holidays` (CUSTOM)**.
+
+---
+
 ## Part 5.5 (Series 5) — `PUT /api/v1/events/{id}` — update flow — STATUS: ✅ done
 Date: 2026-05-08
 Operator: Mukul Phogat
