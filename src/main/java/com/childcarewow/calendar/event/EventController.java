@@ -13,6 +13,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -48,6 +49,25 @@ public class EventController {
     }
     EventView created = service.create(req, actor);
     return ResponseEntity.status(HttpStatus.CREATED).body(created);
+  }
+
+  /**
+   * Updates an existing event. The policy gate is resource-bearing — we load the entity first so
+   * {@code policyService.assertCan(actor, "event.edit", event)} can decide on STAFF type-specific
+   * scoping (CLASSROOM staff need classroom membership, etc.) per Part 3.2's rules.
+   */
+  @PutMapping("/{id}")
+  @Audited(action = "EVENT_UPDATE", targetType = "EVENT")
+  public EventView update(
+      @AuthenticationPrincipal UserPrincipal actor,
+      @PathVariable UUID id,
+      @Valid @RequestBody CreateEventRequest req) {
+    Event existing = service.loadForPolicyCheck(id);
+    policy.assertCan(actor, "event.edit", existing);
+    if (req.type() == EventType.SCHOOL) {
+      policy.assertCan(actor, "event.create.schoolType");
+    }
+    return service.update(id, req, actor);
   }
 
   @GetMapping("/{id}")
