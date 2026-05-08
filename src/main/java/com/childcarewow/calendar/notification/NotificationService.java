@@ -31,4 +31,20 @@ public class NotificationService {
         event.getSchoolId(),
         event.getTitle());
   }
+
+  /**
+   * No-op until Part 5.8. The real impl will diff {@code prev} → {@code next} and emit
+   * UPDATE/CANCEL/INVITE notifications depending on whether {@code inviteParents} flipped or core
+   * fields (date/time/classroom) changed.
+   */
+  public void dispatchEventUpdated(Event prev, Event next) {
+    if (next == null) {
+      return;
+    }
+    log.debug(
+        "[stub] dispatchEventUpdated event={} title={} -> {}",
+        next.getId(),
+        prev == null ? null : prev.getTitle(),
+        next.getTitle());
+  }
 }

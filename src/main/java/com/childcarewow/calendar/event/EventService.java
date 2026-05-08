@@ -241,6 +241,139 @@ public class EventService {
         eventId);
   }
 
+  /**
+   * Updates an existing event. Same validation as create. Holiday check skipped when {@code
+   * startDt} is unchanged (per the prototype's {@code validateEventInput}). Soft-flag recompute
+   * always runs because the bidirectional pair semantics need a fresh sweep on any save.
+   *
+   * <p>Returns {@code EventView} with refreshed join-table arrays + active soft-flags. Throws
+   * {@link com.childcarewow.calendar.exception.NotFoundException} if the event doesn't exist.
+   *
+   * <p>Caller is responsible for the policy gate. The controller calls {@code
+   * policyService.assertCan(actor, "event.edit", event)} after fetching the existing row, so the
+   * resource-bearing policy decision can run on the loaded entity.
+   */
+  @Transactional
+  public EventView update(UUID id, CreateEventRequest req, UserPrincipal actor) {
+    Event existing =
+        eventRepo
+            .findById(id)
+            .filter(e -> e.getDeletedAt() == null)
+            .orElseThrow(
+                () -> new com.childcarewow.calendar.exception.NotFoundException("Event", id));
+
+    // Capture the pre-mutation snapshot for notification diffing. Defensive copy of the fields
+    // we care about so subsequent mutations don't shift the snapshot's identity.
+    Event prev = snapshotForDiff(existing);
+
+    validateRequest(req);
+
+    // Holiday check only fires when startDt actually changed.
+    boolean startMoved = !existing.getStartDt().toInstant().equals(req.startDt().toInstant());
+    if (startMoved) {
+      LocalDate startSchoolLocal =
+          timezoneService.toSchoolLocalDate(req.startDt().toInstant(), req.schoolId());
+      if (timezoneService.isHolidayForSchool(req.schoolId(), startSchoolLocal)) {
+        throw new EventOnHolidayException(startSchoolLocal.toString());
+      }
+    }
+
+    // Platform existence checks for fields that may have changed.
+    platformValidator.assertSchoolExists(req.schoolId());
+    if (req.type() == EventType.CLASSROOM) {
+      platformValidator.assertClassroomExists(req.classroomId());
+      platformValidator.assertClassroomBelongsToSchool(req.classroomId(), req.schoolId());
+    }
+    if (req.organizerUserId() != null) {
+      platformValidator.assertUserExists(req.organizerUserId());
+    }
+    if (req.type() == EventType.CUSTOM) {
+      for (UUID userId : req.attendeeUserIds()) {
+        platformValidator.assertUserExists(userId);
+      }
+      for (UUID studentId : req.studentIds()) {
+        platformValidator.assertStudentExists(studentId);
+      }
+    }
+    List<EventView.ExcludedParticipantView> resolvedExclusions = List.of();
+    if (req.type() == EventType.SCHOOL && !req.excludedParticipantIds().isEmpty()) {
+      resolvedExclusions = resolveExclusions(req.excludedParticipantIds());
+    }
+
+    // Mutate the managed entity
+    existing.setSchoolId(req.schoolId());
+    existing.setType(req.type());
+    existing.setTitle(req.title().trim());
+    existing.setDescription(req.description());
+    existing.setClassroomId(req.classroomId());
+    existing.setStartDt(req.startDt());
+    existing.setEndDt(req.endDt());
+    existing.setAllDay(Boolean.TRUE.equals(req.allDay()));
+    existing.setOrganizerUserId(req.organizerUserId() == null ? actor.id() : req.organizerUserId());
+    existing.setInviteParents(Boolean.TRUE.equals(req.inviteParents()));
+    existing.setUpdatedByUserId(actor.id());
+
+    Event saved = eventRepo.saveAndFlush(existing);
+    em.refresh(saved);
+    UUID eventId = saved.getId();
+
+    // Replace join-table rows. Simpler than diffing against the prior set; CASCADE doesn't help
+    // because we're not deleting the parent event. Clear-and-rebuild matches the soft-flag
+    // recompute pattern from Series 3.
+    if (req.type() == EventType.CUSTOM) {
+      calendarJdbc.update("DELETE FROM event_attendees WHERE event_id = ?", eventId);
+      calendarJdbc.update("DELETE FROM event_students WHERE event_id = ?", eventId);
+      insertAttendees(eventId, req.attendeeUserIds());
+      insertStudents(eventId, req.studentIds());
+    } else {
+      // Type may have flipped from CUSTOM → other; clear stale rows.
+      calendarJdbc.update("DELETE FROM event_attendees WHERE event_id = ?", eventId);
+      calendarJdbc.update("DELETE FROM event_students WHERE event_id = ?", eventId);
+    }
+    calendarJdbc.update("DELETE FROM event_excluded_participants WHERE event_id = ?", eventId);
+    if (!resolvedExclusions.isEmpty()) {
+      insertExclusions(eventId, resolvedExclusions);
+    }
+
+    // Recompute always: time/classroom/organizer changes can introduce or remove overlaps.
+    softFlagService.recomputeForEvent(eventId);
+
+    notificationService.dispatchEventUpdated(prev, saved);
+
+    return EventMapper.toView(
+        saved,
+        req.type() == EventType.CUSTOM ? List.copyOf(req.attendeeUserIds()) : List.of(),
+        req.type() == EventType.CUSTOM ? List.copyOf(req.studentIds()) : List.of(),
+        resolvedExclusions,
+        softFlagService.findActiveByEntity(FlaggedEntity.EVENT, eventId));
+  }
+
+  /** Detached snapshot used by notification diffing — captures the fields the diff cares about. */
+  private static Event snapshotForDiff(Event e) {
+    Event s = new Event();
+    s.setId(e.getId());
+    s.setOrgId(e.getOrgId());
+    s.setSchoolId(e.getSchoolId());
+    s.setType(e.getType());
+    s.setTitle(e.getTitle());
+    s.setStartDt(e.getStartDt());
+    s.setEndDt(e.getEndDt());
+    s.setClassroomId(e.getClassroomId());
+    s.setOrganizerUserId(e.getOrganizerUserId());
+    s.setInviteParents(e.isInviteParents());
+    s.setCreatedByUserId(e.getCreatedByUserId());
+    return s;
+  }
+
+  /** Loads an event for the controller's pre-update policy gate. 404 if missing or soft-deleted. */
+  @Transactional(readOnly = true)
+  public Event loadForPolicyCheck(UUID id) {
+    return eventRepo
+        .findById(id)
+        .filter(e -> e.getDeletedAt() == null)
+        .orElseThrow(() -> new com.childcarewow.calendar.exception.NotFoundException("Event", id));
+  }
+
   @Transactional
   public EventView create(CreateEventRequest req, UserPrincipal actor) {
     validateRequest(req);
