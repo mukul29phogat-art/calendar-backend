@@ -10,8 +10,11 @@ import com.childcarewow.calendar.platform.PlatformEntityValidator;
 import com.childcarewow.calendar.softflag.SoftFlagService;
 import jakarta.persistence.EntityManager;
 import java.time.OffsetDateTime;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,15 +33,28 @@ public class HolidayService {
   private final SoftFlagService softFlagService;
   private final EntityManager em;
 
+  /**
+   * Self-reference for batch operations that need each iteration to run in its own transaction.
+   * Calling {@code this.approve(...)} from {@link #approveBatch} would skip the proxy and the inner
+   * method's {@code @Transactional} would have no effect — so one row's exception would leave the
+   * loop in an inconsistent state. Routing through {@code self.approve(...)} goes back through the
+   * Spring proxy, giving each id its own transaction (REQUIRED creates a new tx because the outer
+   * batch method is non-transactional).
+   */
+  private final HolidayService self;
+
+  @Autowired
   public HolidayService(
       HolidayRepository holidayRepo,
       PlatformEntityValidator platformValidator,
       SoftFlagService softFlagService,
-      EntityManager em) {
+      EntityManager em,
+      @Lazy HolidayService self) {
     this.holidayRepo = holidayRepo;
     this.platformValidator = platformValidator;
     this.softFlagService = softFlagService;
     this.em = em;
+    this.self = self;
   }
 
   @Transactional
@@ -211,5 +227,44 @@ public class HolidayService {
     softFlagService.recomputeForHoliday(saved);
 
     return HolidayView.fromEntity(saved);
+  }
+
+  /**
+   * Approves N holidays in one call, isolating per-row failures. Each id runs in its own
+   * transaction (via {@link #self}), so a {@link DuplicateHolidayException} or {@link
+   * NotFoundException} on row K doesn't roll back rows 1..K-1. Already-approved ids count as a skip
+   * with reason {@code ALREADY_APPROVED} (so callers can distinguish "approved this run" from "was
+   * already approved" — the latter is logged but doesn't bump the {@code approved} count).
+   *
+   * <p>The batch method itself is intentionally NOT {@code @Transactional} — that's what makes the
+   * per-row isolation work.
+   */
+  public ApproveBatchResult approveBatch(List<UUID> ids, UserPrincipal actor) {
+    int approvedCount = 0;
+    List<ApproveBatchResult.Skip> skipped = new ArrayList<>();
+
+    for (UUID id : ids) {
+      // Fetch BEFORE calling self.approve so we can tell already-approved from approved-this-run
+      // without an extra DB call inside the per-row tx. The fetch here lives outside the
+      // self.approve transaction; that's fine — we're just deciding which counter to bump.
+      var existing = holidayRepo.findById(id).filter(h -> h.getDeletedAt() == null);
+      boolean wasAlreadyApproved = existing.map(Holiday::isApproved).orElse(false);
+
+      try {
+        self.approve(id, actor);
+        if (wasAlreadyApproved) {
+          skipped.add(new ApproveBatchResult.Skip(id, "ALREADY_APPROVED"));
+        } else {
+          approvedCount++;
+        }
+      } catch (NotFoundException e) {
+        skipped.add(new ApproveBatchResult.Skip(id, "NOT_FOUND"));
+      } catch (DuplicateHolidayException e) {
+        skipped.add(new ApproveBatchResult.Skip(id, "DUPLICATE_HOLIDAY"));
+      } catch (ForbiddenException e) {
+        skipped.add(new ApproveBatchResult.Skip(id, "FORBIDDEN"));
+      }
+    }
+    return new ApproveBatchResult(approvedCount, List.copyOf(skipped));
   }
 }
