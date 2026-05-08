@@ -1,58 +1,246 @@
 package com.childcarewow.calendar.notification;
 
 import com.childcarewow.calendar.event.Event;
+import com.childcarewow.calendar.timezone.TimezoneService;
+import java.time.LocalDate;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
+import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
+import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 /**
- * Notification dispatcher stub. The real implementation lands in Part 5.8 of the playbook
- * ("Notification dispatcher: EVENT_INVITE write"). This stub exists so {@link
- * com.childcarewow.calendar.event.EventService} can call it from Part 5.1 onwards without a
- * compile-time dep on Series-5.8 work.
+ * Writes notification rows on event create/update/delete (architecture spec § 7.4). The actual
+ * email/push delivery is Series 11 — this service stops at the {@code notifications} + {@code
+ * notification_recipients} write.
  *
- * <p>Once 5.8 lands, replace these no-ops with the real flow: write {@code notifications} + {@code
- * notification_recipients} rows, respect the holiday-pause hook from {@code
- * timezoneService.isHolidayForSchool}, and queue PUSH delivery via FCM.
+ * <p><b>Recipient resolution:</b>
+ *
+ * <ul>
+ *   <li>{@code SCHOOL} → all {@code PARENT}-role users at the school.
+ *   <li>{@code CLASSROOM} → parents of non-deleted students in that classroom.
+ *   <li>{@code CUSTOM} → coarse rule: all parents at the school. Flagged COPPA-blocking — Part 12.4
+ *       narrows to "parents of students in {@code event_students}". Documented in the relevant
+ *       resolver method.
+ * </ul>
+ *
+ * <p>Then subtract: any {@code USER} ids in {@code excludedParticipantIds} directly; any {@code
+ * STUDENT} ids resolved to their parent user_ids and subtracted too.
+ *
+ * <p><b>Holiday pause:</b> if an approved holiday at the school covers the event's school-local
+ * date, the notification row is written with {@code paused=true} and a {@code pausedReason}.
+ * Recipients are still inserted so a future "unpause" job can flip the flag without rebuilding the
+ * recipient set.
  */
 @Service
 public class NotificationService {
 
   private static final Logger log = LoggerFactory.getLogger(NotificationService.class);
 
-  /** No-op until Part 5.8. Logged at DEBUG so test output stays quiet. */
+  private final NotificationRepository notificationRepo;
+  private final NotificationRecipientRepository recipientRepo;
+  private final NamedParameterJdbcTemplate platformNamedJdbc;
+  private final JdbcTemplate calendarJdbc;
+  private final TimezoneService timezoneService;
+
+  public NotificationService(
+      NotificationRepository notificationRepo,
+      NotificationRecipientRepository recipientRepo,
+      @Qualifier("platformNamedJdbcTemplate") NamedParameterJdbcTemplate platformNamedJdbc,
+      @Qualifier("calendarJdbcTemplate") JdbcTemplate calendarJdbc,
+      TimezoneService timezoneService) {
+    this.notificationRepo = notificationRepo;
+    this.recipientRepo = recipientRepo;
+    this.platformNamedJdbc = platformNamedJdbc;
+    this.calendarJdbc = calendarJdbc;
+    this.timezoneService = timezoneService;
+  }
+
+  // -- public dispatchers ----------------------------------------------------
+
+  /** Writes EVENT_INVITE when {@code inviteParents=true}; otherwise no-op. */
+  @Transactional
   public void dispatchEventCreated(Event event) {
-    if (event == null) {
+    if (event == null || !event.isInviteParents()) {
       return;
     }
-    log.debug(
-        "[stub] dispatchEventCreated event={} school={} title={}",
-        event.getId(),
-        event.getSchoolId(),
-        event.getTitle());
+    writeWithRecipients(
+        event, NotificationKind.EVENT_INVITE, "You're invited to: " + event.getTitle());
   }
 
   /**
-   * No-op until Part 5.8. The real impl will diff {@code prev} → {@code next} and emit
-   * UPDATE/CANCEL/INVITE notifications depending on whether {@code inviteParents} flipped or core
-   * fields (date/time/classroom) changed.
+   * Diff prev → next:
+   *
+   * <ul>
+   *   <li>off → on: EVENT_INVITE.
+   *   <li>on → off: EVENT_CANCELLED.
+   *   <li>on → on: EVENT_UPDATED.
+   *   <li>off → off: nothing.
+   * </ul>
    */
+  @Transactional
   public void dispatchEventUpdated(Event prev, Event next) {
     if (next == null) {
       return;
     }
-    log.debug(
-        "[stub] dispatchEventUpdated event={} title={} -> {}",
-        next.getId(),
-        prev == null ? null : prev.getTitle(),
-        next.getTitle());
-  }
-
-  /** No-op until Part 5.8. The real impl will queue CANCEL notifications to invitees. */
-  public void dispatchEventDeleted(Event event) {
-    if (event == null) {
+    boolean prevInvite = prev != null && prev.isInviteParents();
+    boolean nextInvite = next.isInviteParents();
+    if (!prevInvite && !nextInvite) {
       return;
     }
-    log.debug("[stub] dispatchEventDeleted event={} title={}", event.getId(), event.getTitle());
+    NotificationKind kind;
+    String msg;
+    if (!prevInvite) {
+      kind = NotificationKind.EVENT_INVITE;
+      msg = "You're invited to: " + next.getTitle();
+    } else if (!nextInvite) {
+      kind = NotificationKind.EVENT_CANCELLED;
+      msg = "Cancelled: " + next.getTitle();
+    } else {
+      kind = NotificationKind.EVENT_UPDATED;
+      msg = "Updated: " + next.getTitle();
+    }
+    writeWithRecipients(next, kind, msg);
+  }
+
+  /** Writes EVENT_CANCELLED when the deleted event had invitees; otherwise no-op. */
+  @Transactional
+  public void dispatchEventDeleted(Event event) {
+    if (event == null || !event.isInviteParents()) {
+      return;
+    }
+    writeWithRecipients(event, NotificationKind.EVENT_CANCELLED, "Cancelled: " + event.getTitle());
+  }
+
+  // -- core write path -------------------------------------------------------
+
+  private void writeWithRecipients(Event event, NotificationKind kind, String baseMessage) {
+    Set<UUID> recipientIds = resolveRecipients(event);
+    if (recipientIds.isEmpty()) {
+      log.debug(
+          "No recipients for event={} kind={}; skipping notification write", event.getId(), kind);
+      return;
+    }
+
+    String pausedReason = checkPauseReason(event);
+    String message =
+        pausedReason == null ? baseMessage : "[paused: " + pausedReason + "] " + baseMessage;
+
+    Notification n = new Notification();
+    n.setOrgId(event.getOrgId());
+    n.setSchoolId(event.getSchoolId());
+    n.setKind(kind);
+    n.setMessage(message);
+    n.setRelatedEntityId(event.getId());
+    n.setRelatedEntityTitle(event.getTitle());
+    n.setPaused(pausedReason != null);
+    n.setPausedReason(pausedReason);
+    n.setPayload("{}");
+    Notification saved = notificationRepo.save(n);
+
+    for (UUID userId : recipientIds) {
+      NotificationRecipient r = new NotificationRecipient();
+      r.setNotificationId(saved.getId());
+      r.setUserId(userId);
+      recipientRepo.save(r);
+    }
+  }
+
+  /** Looks up an approved, non-deleted holiday on the event's school-local date. */
+  private String checkPauseReason(Event event) {
+    LocalDate localDate =
+        timezoneService.toSchoolLocalDate(event.getStartDt().toInstant(), event.getSchoolId());
+    String name =
+        calendarJdbc.query(
+            "SELECT name FROM holidays "
+                + "WHERE school_id = ? AND date = ? AND approved = true AND deleted_at IS NULL "
+                + "LIMIT 1",
+            rs -> rs.next() ? rs.getString(1) : null,
+            event.getSchoolId(),
+            localDate);
+    return name == null ? null : "Holiday: " + name;
+  }
+
+  // -- recipient resolution --------------------------------------------------
+
+  Set<UUID> resolveRecipients(Event event) {
+    Set<UUID> base = new HashSet<>(baseRecipients(event));
+    base.removeAll(excludedRecipients(event.getId()));
+    return base;
+  }
+
+  /** Type-specific recipient set BEFORE excludedParticipantIds subtraction. */
+  private List<UUID> baseRecipients(Event event) {
+    return switch (event.getType()) {
+      case SCHOOL -> parentsAtSchool(event.getSchoolId());
+      case CLASSROOM -> parentsOfStudentsInClassroom(event.getClassroomId());
+        // CUSTOM uses the coarse "parents at school" rule. COPPA-blocking — Part 12.4 narrows to
+        // the actual event_students roster. Until then, we keep this open and rely on
+        // excludedParticipantIds to restrict.
+      case CUSTOM -> parentsAtSchool(event.getSchoolId());
+    };
+  }
+
+  private List<UUID> parentsAtSchool(UUID schoolId) {
+    return platformNamedJdbc.queryForList(
+        "SELECT u.id FROM users u "
+            + "JOIN user_schools us ON us.user_id = u.id "
+            + "WHERE u.role = 'PARENT' AND us.school_id = :schoolId",
+        new MapSqlParameterSource("schoolId", schoolId),
+        UUID.class);
+  }
+
+  private List<UUID> parentsOfStudentsInClassroom(UUID classroomId) {
+    if (classroomId == null) {
+      return List.of();
+    }
+    return platformNamedJdbc.queryForList(
+        "SELECT DISTINCT sp.user_id FROM student_parents sp "
+            + "JOIN students s ON s.id = sp.student_id "
+            + "WHERE s.classroom_id = :classroomId AND s.deleted_at IS NULL",
+        new MapSqlParameterSource("classroomId", classroomId),
+        UUID.class);
+  }
+
+  /**
+   * Resolves the event's excludedParticipantIds (user_ids + student_ids) into a single user_id set
+   * to subtract. Student exclusions map to all of that student's parent user_ids.
+   */
+  private Set<UUID> excludedRecipients(UUID eventId) {
+    record Row(UUID id, String type) {}
+    List<Row> rows =
+        calendarJdbc.query(
+            "SELECT participant_id, participant_type FROM event_excluded_participants "
+                + "WHERE event_id = ?",
+            (rs, n) ->
+                new Row(
+                    UUID.fromString(rs.getString("participant_id")),
+                    rs.getString("participant_type")),
+            eventId);
+    Set<UUID> userExclusions = new HashSet<>();
+    Set<UUID> studentExclusions = new HashSet<>();
+    for (Row r : rows) {
+      if ("USER".equals(r.type())) {
+        userExclusions.add(r.id());
+      } else if ("STUDENT".equals(r.type())) {
+        studentExclusions.add(r.id());
+      }
+    }
+    Set<UUID> excluded = new HashSet<>(userExclusions);
+    if (!studentExclusions.isEmpty()) {
+      excluded.addAll(
+          platformNamedJdbc.queryForList(
+              "SELECT user_id FROM student_parents WHERE student_id IN (:ids)",
+              new MapSqlParameterSource("ids", studentExclusions),
+              UUID.class));
+    }
+    return excluded;
   }
 }
