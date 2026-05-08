@@ -226,6 +226,16 @@ public class SoftFlagService {
     repo.deleteDoubleBookingFlagsForTask(taskId);
   }
 
+  /**
+   * Hard-clears HOLIDAY flags whose {@code conflicting_entity_id} is the given holiday. Called from
+   * the holiday delete path (Part 6.3). Differs from {@link #recomputeForHoliday}: this one doesn't
+   * re-insert. Use {@link #recomputeForHoliday} on edits (it clears + re-inserts).
+   */
+  @Transactional
+  public void removeFlagsForHoliday(UUID holidayId) {
+    repo.deleteHolidayFlagsForHoliday(holidayId);
+  }
+
   static boolean dueTimesOverlap(LocalTime a, LocalTime b) {
     if (a == null && b == null) {
       return true;

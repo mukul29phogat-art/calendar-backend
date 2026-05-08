@@ -9,9 +9,11 @@ import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -59,5 +61,24 @@ public class HolidayController {
   @GetMapping("/{id}")
   public HolidayView findById(@AuthenticationPrincipal UserPrincipal actor, @PathVariable UUID id) {
     return service.findById(id, actor);
+  }
+
+  @PutMapping("/{id}")
+  @Audited(action = "HOLIDAY_UPDATE", targetType = "HOLIDAY")
+  public HolidayView update(
+      @AuthenticationPrincipal UserPrincipal actor,
+      @PathVariable UUID id,
+      @Valid @RequestBody CreateHolidayRequest req) {
+    policy.assertCan(actor, "holiday.manage");
+    return service.update(id, req, actor);
+  }
+
+  @DeleteMapping("/{id}")
+  @Audited(action = "HOLIDAY_DELETE", targetType = "HOLIDAY")
+  public ResponseEntity<Void> delete(
+      @AuthenticationPrincipal UserPrincipal actor, @PathVariable UUID id) {
+    policy.assertCan(actor, "holiday.manage");
+    service.delete(id);
+    return ResponseEntity.noContent().build();
   }
 }
