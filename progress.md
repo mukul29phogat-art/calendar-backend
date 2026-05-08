@@ -29,6 +29,56 @@ Next part: X.Y+1
 
 ---
 
+## Part 5.5 (Series 5) — `PUT /api/v1/events/{id}` — update flow — STATUS: ✅ done
+Date: 2026-05-08
+Operator: Mukul Phogat
+
+What got built:
+- `PUT /api/v1/events/{id}` on `EventController` with `@Audited("EVENT_UPDATE", targetType="EVENT")`. Resource-bearing policy gate: `service.loadForPolicyCheck(id)` returns the existing entity, then `policy.assertCan(actor, "event.edit", existing)` runs Part 3.2's STAFF type-specific scoping (classroom-membership for CLASSROOM, school for CUSTOM, denied for SCHOOL). Type-flip to SCHOOL also asserts `event.create.schoolType` so a STAFF can't promote.
+- `EventService.update(id, req, actor)`:
+  1. 404 if missing or soft-deleted.
+  2. **Snapshot** the pre-mutation entity via `snapshotForDiff` — captures the fields the notification diff will inspect (title, startDt, endDt, classroomId, organizerUserId, inviteParents). Detached copy so subsequent mutations don't shift its identity.
+  3. Same `validateRequest` as create.
+  4. **Holiday check fires only when `startDt`'s instant differs from existing** (per the prototype's `validateEventInput` and the playbook's "same-date edit doesn't re-check holiday" requirement). Same-date title/description edits skip the timezone + holidays SELECTs entirely.
+  5. PlatformEntityValidator gates re-run (school + classroom for CLASSROOM, organizer if set, attendees/students for CUSTOM, exclusion resolution for SCHOOL).
+  6. Mutate the managed entity in place + `saveAndFlush + em.refresh`.
+  7. **Clear-and-rebuild join tables** (`event_attendees`, `event_students`, `event_excluded_participants`). Simpler than diffing against the prior set; CASCADE doesn't help when the parent isn't being deleted. Type flip from CUSTOM → other clears stale rows even when no new ones are inserted.
+  8. `softFlagService.recomputeForEvent` always runs (time/classroom/organizer changes can introduce or remove overlaps, so the bidirectional pair sweep matters).
+  9. `notificationService.dispatchEventUpdated(prev, saved)` — stub until 5.8.
+- `NotificationService.dispatchEventUpdated(prev, next)` — new no-op stub paired with the existing `dispatchEventCreated`. Real diff logic (UPDATE/CANCEL/INVITE based on inviteParents flip + core-field changes) lands in 5.8.
+- `EventService.loadForPolicyCheck(id)` — small helper for the controller's pre-update entity load.
+
+Files changed (count: 5):
+- `src/main/java/com/childcarewow/calendar/event/{EventController,EventService}.java`
+- `src/main/java/com/childcarewow/calendar/notification/NotificationService.java`
+- `src/test/java/com/childcarewow/calendar/event/EventUpdateIT.java` — new (7 tests).
+- `docs/openapi.json` — regenerated baseline with the new PUT route.
+
+Validation:
+- [x] `mvn verify` — BUILD SUCCESS, 1m15s; bundle gate ≥80% line met.
+- [x] `EventUpdateIT` — 7/7 tests green:
+  - **`updatesTitleAndDescriptionInPlace`**: rename + `inviteParents` flip in one call; response reflects both.
+  - **`sameDateEditDoesNotRecheckHoliday`**: insert approved holiday on the event's current date, run a no-time-change edit — passes (would fail if the holiday check fired). Confirms the per-`startDt`-change gating.
+  - **`dateChangeToHolidayRejected`**: move event onto Thanksgiving → `EventOnHolidayException`.
+  - **`timeChangeRecomputesSoftFlags`**: create two non-overlapping events in same classroom; move the first into overlap; response carries the `DOUBLE_BOOKING` flag pointing at the second.
+  - **`typeFlipFromCustomToClassroomClearsAttendeesAndStudents`**: 2 attendees + 1 student before; 0 + 0 after the type flip (verified via SQL `COUNT`).
+  - **`unknownIdReturns404`**: NotFoundException.
+  - **`loadForPolicyCheckReturnsEntityForKnownId`**: helper round-trip.
+- [x] All 19 + 15 + 4 prior tests still green.
+- [x] OpenAPI baseline updated.
+- [x] CI green on PR #92 ([run 25558010449](https://github.com/mukul29phogat-art/calendar-backend/actions/runs/25558010449)).
+
+Notes / surprises:
+- **Detached snapshot via `snapshotForDiff`** rather than mutating-then-diffing the managed entity. Setting fields on the JPA-managed entity AFTER capturing the snapshot wouldn't affect the snapshot (it's a separate object), but using a detached copy is safer when 5.8 wires up real notification dispatch — the dispatcher doesn't accidentally trigger lazy loading on the snapshot.
+- **`eventRepo.findById(...).filter(deletedAt==null)`** is the same pattern used in 5.4's `findById`. Could be lifted into a `findActive(id)` helper if it shows up a third time in 5.6.
+- **Clear-and-rebuild on join tables** chosen over diff-and-patch because: (a) the typical attendee/student count is small (<10), (b) the diff plumbing would need to know the prior state which requires another SELECT, (c) the recompute pattern matches `softFlagService.recomputeForEvent`'s clear-then-rebuild design from Part 3.11. Trade-off: writes O(N) rows instead of O(Δ); not a hot path.
+- **`startMoved` check uses `.toInstant().equals(...)`** to compare across `OffsetDateTime` values that may have different offsets but the same wall-clock UTC instant. Without `.toInstant()`, two equivalent times in different time zones (e.g., `2026-09-15T14:00:00-04:00` and `2026-09-15T18:00:00Z`) would compare unequal as `OffsetDateTime`s.
+- **`event.create.schoolType` re-assertion on type promotion**: a STAFF or SCHOOL_ADMIN editing a CUSTOM event into a SCHOOL event would otherwise sneak past the create-time gate. Catching it here keeps the "SCHOOL events require admin" policy uniform across create + edit. The double-check is cheap (PolicyService is in-memory).
+
+Next part: 5.6 — `DELETE /api/v1/events/{id}` (soft delete with `event.delete` policy + cleanup of join tables and DOUBLE_BOOKING flag pairs on the surviving side).
+
+---
+
 ## Part 5.4 (Series 5) — `GET /api/v1/events/{id}` + calendar-window query — STATUS: ✅ done
 Date: 2026-05-07
 Operator: Mukul Phogat
