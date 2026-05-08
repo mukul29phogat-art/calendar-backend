@@ -81,4 +81,16 @@ public class HolidayController {
     service.delete(id);
     return ResponseEntity.noContent().build();
   }
+
+  /**
+   * Approves a federal-pending holiday. Idempotent — re-approving returns the existing row. Per
+   * playbook common-failure-points line 2843, a date-collision with an already-approved CUSTOM is
+   * surfaced as {@code DUPLICATE_HOLIDAY} (409) ahead of the unique-index violation.
+   */
+  @PostMapping("/{id}/approve")
+  @Audited(action = "HOLIDAY_APPROVE", targetType = "HOLIDAY")
+  public HolidayView approve(@AuthenticationPrincipal UserPrincipal actor, @PathVariable UUID id) {
+    policy.assertCan(actor, "holiday.approve");
+    return service.approve(id, actor);
+  }
 }
