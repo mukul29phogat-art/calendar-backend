@@ -5,6 +5,7 @@ import com.childcarewow.calendar.auth.UserPrincipal;
 import com.childcarewow.calendar.exception.DuplicateHolidayException;
 import com.childcarewow.calendar.exception.ForbiddenException;
 import com.childcarewow.calendar.exception.NotFoundException;
+import com.childcarewow.calendar.exception.ValidationException;
 import com.childcarewow.calendar.platform.PlatformEntityValidator;
 import com.childcarewow.calendar.softflag.SoftFlagService;
 import jakarta.persistence.EntityManager;
@@ -112,5 +113,65 @@ public class HolidayService {
     if (!actor.schoolIds().contains(schoolId)) {
       throw new ForbiddenException("holiday.read");
     }
+  }
+
+  /**
+   * Updates name/notes/date on an existing holiday. Per playbook common-failure-points line 2820,
+   * {@code source} and {@code approved} are NOT mutable through this path — those go through the
+   * approve endpoint (Part 6.4) and the federal-sync job. If the date moved, {@code
+   * recomputeForHoliday} clears + re-inserts flags so events on the OLD date drop their flag and
+   * events on the NEW date pick one up.
+   *
+   * <p>Date-change duplicate check: if moving the holiday to a date that already has another
+   * approved holiday for the same school, throws {@link DuplicateHolidayException}.
+   */
+  @Transactional
+  public HolidayView update(UUID id, CreateHolidayRequest req, UserPrincipal actor) {
+    Holiday existing =
+        holidayRepo
+            .findById(id)
+            .filter(h -> h.getDeletedAt() == null)
+            .orElseThrow(() -> new NotFoundException("Holiday", id));
+
+    if (!existing.getSchoolId().equals(req.schoolId())) {
+      // Don't allow re-targeting a holiday to a different school via PUT — that's effectively a
+      // delete-and-recreate.
+      throw new ValidationException("schoolId", "schoolId is immutable");
+    }
+
+    if (!existing.getDate().equals(req.date())
+        && holidayRepo
+            .findApprovedAt(req.schoolId(), req.date())
+            .filter(h -> !h.getId().equals(id))
+            .isPresent()) {
+      throw new DuplicateHolidayException(req.date());
+    }
+
+    existing.setName(req.name());
+    existing.setNotes(req.notes());
+    existing.setDate(req.date());
+
+    Holiday saved = holidayRepo.saveAndFlush(existing);
+    em.refresh(saved);
+
+    softFlagService.recomputeForHoliday(saved);
+
+    return HolidayView.fromEntity(saved);
+  }
+
+  /**
+   * Soft-deletes the holiday and clears its HOLIDAY flags. Affected events/tasks no longer render
+   * the "falls on holiday" banner.
+   */
+  @Transactional
+  public void delete(UUID id) {
+    Holiday existing =
+        holidayRepo
+            .findById(id)
+            .filter(h -> h.getDeletedAt() == null)
+            .orElseThrow(() -> new NotFoundException("Holiday", id));
+    existing.setDeletedAt(OffsetDateTime.now());
+    holidayRepo.saveAndFlush(existing);
+    softFlagService.removeFlagsForHoliday(id);
   }
 }
