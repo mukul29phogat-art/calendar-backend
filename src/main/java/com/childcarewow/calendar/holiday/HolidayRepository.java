@@ -32,4 +32,19 @@ public interface HolidayRepository extends JpaRepository<Holiday, UUID> {
           + "AND (:source IS NULL OR h.source = :source) "
           + "ORDER BY h.date ASC")
   List<Holiday> findFiltered(UUID schoolId, Boolean approved, HolidaySource source);
+
+  /**
+   * Calendar-feed query (Part 7.3). Returns only approved, non-deleted holidays at the school whose
+   * date falls in the inclusive {@code [from, to]} window. Pending-federal rows never appear on the
+   * calendar — they live in the approval queue (Part 6.4) until an admin acts on them.
+   */
+  @Query(
+      "SELECT h FROM Holiday h WHERE h.schoolId = :schoolId "
+          + "AND h.approved = true "
+          + "AND h.deletedAt IS NULL "
+          + "AND h.date >= :from "
+          + "AND h.date <= :to "
+          + "ORDER BY h.date ASC")
+  List<Holiday> findApprovedInWindow(
+      UUID schoolId, java.time.LocalDate from, java.time.LocalDate to);
 }

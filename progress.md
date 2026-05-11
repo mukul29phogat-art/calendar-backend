@@ -29,6 +29,66 @@ Next part: X.Y+1
 
 ---
 
+## Part 7.3 (Series 7) — Calendar adds holidays + important_dates + birthdays + filters — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **All five `CalendarItem` kinds now emit on the wire.** Holidays + important_dates + birthdays merged into the response; `BirthdayCalendarItem` / `ImportantCalendarItem` data fields tightened from `Object` placeholders to typed `ImportantDateView`.
+- **`importantdate/ImportantDateView`** — new record matching FE's `ImportantDate` type at `src/types/index.ts:121`: `(id, schoolId, date, label, kind, studentId?, visibleToParents)`. `@JsonInclude(NON_NULL)` keeps `visibleToParents=false` on the wire (it's a meaningful negative for admins) but drops null `studentId` for IMPORTANT rows.
+- **`importantdate/ImportantDateRepository.findInWindow(schoolId, from, to)`** — non-deleted rows ordered by date; visibility narrowing happens in the service.
+- **`importantdate/ImportantDateReadService`** — new read service that materializes both `BirthdayCalendarItem` and `ImportantCalendarItem` from one DB query.
+  - **PARENT visibility**: `visible_to_parents=true` is the gate; for BIRTHDAY rows the parent additionally must own the linked student (i.e. `student_id ∈ actor.childStudentIds()`). For IMPORTANT rows there's no per-student narrowing — once `visibleToParents=true`, every parent at the school sees it.
+  - ADMIN/STAFF: no clamp; sees every row in window.
+- **`holiday/HolidayRepository.findApprovedInWindow(schoolId, from, to)`** — `approved=true AND deleted_at IS NULL` only. Pending federals NEVER appear on the calendar feed; they live in the approval queue (Part 6.4).
+- **`calendar/CalendarReadService`** now wires four kinds (events + tasks + holidays + important_dates split into birthday/important). New 5-arg `read(schoolId, from, to, filters, actor)` overload; 4-arg legacy overload preserved as `read(..., null, actor)` so 7.1/7.2 call sites compile unchanged.
+- **`filters` query param wired.** Spring auto-parses comma-separated `Set<String>`. `CalendarReadService.normalizeFilters` accepts both **FE-friendly plurals** (`events`, `tasks`, `holidays`, `birthdays`, `important_dates`) and **singular kind names** (matching the JSON discriminator). Unknown tokens are silently dropped so a future FE filter doesn't 400 against an older backend. `filters=null` or empty → "all kinds". `filters` with only unknown tokens → empty response (the client asked for a specific set; returning "all" would surprise).
+
+Files changed (count: 10; 4 new, 5 modified, 1 test):
+- `src/main/java/com/childcarewow/calendar/importantdate/ImportantDateView.java` — new.
+- `src/main/java/com/childcarewow/calendar/importantdate/ImportantDateRepository.java` — `+findInWindow`.
+- `src/main/java/com/childcarewow/calendar/importantdate/ImportantDateReadService.java` — new.
+- `src/main/java/com/childcarewow/calendar/holiday/HolidayRepository.java` — `+findApprovedInWindow`.
+- `src/main/java/com/childcarewow/calendar/calendar/BirthdayCalendarItem.java` — `Object data` → `ImportantDateView data`.
+- `src/main/java/com/childcarewow/calendar/calendar/ImportantCalendarItem.java` — `Object data` → `ImportantDateView data`.
+- `src/main/java/com/childcarewow/calendar/calendar/CalendarReadService.java` — wires holidays + important_dates + `filters` normalization.
+- `src/main/java/com/childcarewow/calendar/calendar/CalendarController.java` — passes `filters` into the service.
+- `src/test/java/com/childcarewow/calendar/calendar/CalendarControllerTest.java` — updated mock matchers from 4 `any()` to 5.
+- `src/test/java/com/childcarewow/calendar/calendar/CalendarHolidayImportantReadIT.java` — new (10 tests).
+- `docs/openapi.json` — regenerated (`ImportantDateView` schema, typed `BirthdayCalendarItem.data` / `ImportantCalendarItem.data`, `filters` query param).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m51s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `CalendarHolidayImportantReadIT` — 10/10 real-DB tests green:
+  - **`approvedHolidayAppearsAsHolidayCalendarItem`** — approved holiday on 2026-07-04 → 1 `HolidayCalendarItem` with `data.approved=true`.
+  - **`pendingFederalHolidayNotInCalendarFeed`** — raw-insert a pending federal at (Sunrise, 2026-11-11) → 0 holiday items in the feed.
+  - **`adminSeesBothBirthdayAndImportantKinds`** — admin sees 1 birthday + 1 important.
+  - **`parentSeesOwnChildBirthdayWhenVisibleToParents`** — Priya sees Aanya's (her child) birthday when `visible_to_parents=true`.
+  - **`parentDoesNotSeeOtherChildsBirthday`** — Priya does NOT see Jordan's (other classroom) birthday, even when visible-to-parents.
+  - **`parentDoesNotSeeBirthdayMarkedNotVisibleToParents`** — Priya does NOT see Aanya's birthday when `visible_to_parents=false`.
+  - **`parentVisibilityOnImportantHonoursVisibleToParentsGate`** — 2 IMPORTANT rows (one public, one private); parent sees only the public one.
+  - **`filtersNarrowResponseToOnlyRequestedKinds`** — `filters=holidays` returns the holiday and drops the birthday on the same date.
+  - **`filtersAcceptBothPluralAndSingularTokens`** — `{"holidays", "important_dates"}` and `{"holiday", "important"}` both return 2 items.
+  - **`filtersUnknownTokensSilentlyDropAndReturnEmptyIfNoneRecognized`** — `{"reminders"}` (unknown only) → empty response (not "all").
+- [x] OpenAPI snapshot regenerated: adds `ImportantDateView` component, tightens `BirthdayCalendarItem.data` / `ImportantCalendarItem.data` from `{}` (Object) to `ImportantDateView`, surfaces `filters` query param on the `/api/v1/calendar` operation.
+- [x] All earlier tests still green (no regression). The 4-arg `read` overload preserves the 7.1/7.2 call sites.
+
+Notes / surprises:
+- **Controller-slice test mock matchers were the lurking gotcha.** When I widened `CalendarReadService.read` from 4 args to 5, the existing `when(service.read(any(), any(), any(), any()))` in `CalendarControllerTest` stopped matching — Mockito returned the default empty list instead of my stubbed values. Symptoms: happy-path test saw an empty response (`No value at JSON path "$[0].kind"`); 400-envelope test got 200 instead of 400 (the `thenThrow` never fired). One-character fix: add a 5th `any()`. Worth remembering anytime a public service method's arity changes — slice-test mocks won't compile-fail, just silently no-op.
+- **`@JsonInclude(NON_NULL)` chosen over `NON_DEFAULT`** for `ImportantDateView`. `NON_DEFAULT` would drop `visibleToParents=false` on the wire, but admins need to see that explicit negative state ("this important date is NOT shared with parents"). `NON_NULL` keeps the boolean and only drops `studentId` when it's null (IMPORTANT rows).
+- **Filter token normalization is generous.** Both plurals and singulars are accepted; unknown tokens drop silently. The trade-off is that a typo like `?filters=holidaaay` returns empty (the client asked for that specific kind set, and the only token is unknown). Symmetric with the strict-but-friendly contract on the FE: the API doesn't surprise the client by returning "all" when they typed wrong. Documented inline.
+- **Pending-federal exclusion is enforced at the repo layer**, not just the service. `findApprovedInWindow` filters on `approved=true` directly in JPQL. If a future code path skips through `findFiltered(...)` it'd potentially leak pending rows, but `findFiltered` is only used by the holidays controller's list endpoint (Part 6.2), which has its own PARENT-clamp logic. The calendar feed's path uses the more restrictive query.
+- **Skipped writing a `CalendarTaskReadIT`-style filters slice test** because the `filters` shape doesn't change behaviour per-kind beyond inclusion/exclusion; the IT exercises the contract end-to-end. The wire-level filter parsing is implicitly tested via Spring's `@RequestParam Set<String>` conversion (covered by the existing `CalendarControllerTest` happy-path).
+
+### Carry-forward
+
+- All previously-open carry-forwards remain unchanged. No new entries from this Part.
+
+Next part: **Part 7.4 — role-based visibility (full matrix).** Per playbook line 3075. Apply per-role filtering at query time (preferred) or post-query. STAFF narrowing: SCHOOL events (all), CLASSROOM events (own classroomIds), CUSTOM events (organizer or attendee), tasks (only assigned), holidays (approved at school), birthdays + important (as configured). Audit STUDENT_VIEW writes for any response containing student names. 4 roles × 5 kinds = 20-case matrix minimum. Most of the filtering is already in place (events via `EventService.isVisibleTo` from 5.4, tasks via D10 short-circuit, important_dates via `ImportantDateReadService` parent clamp). The remaining gap is STAFF narrowing on tasks ("only assigned").
+
+---
+
 ## Part 7.2 (Series 7) — Calendar adds tasks (with recurrence expansion) — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat

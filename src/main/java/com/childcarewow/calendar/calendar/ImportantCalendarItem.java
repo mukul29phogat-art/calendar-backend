@@ -1,10 +1,17 @@
 package com.childcarewow.calendar.calendar;
 
+import com.childcarewow.calendar.importantdate.ImportantDateView;
 import java.time.LocalDate;
 
 /**
- * Placeholder for the {@code "kind":"important"} branch of the calendar feed. Part 7.3 wires this
- * up to {@code important_dates} rows where {@code kind=IMPORTANT}. For Part 7.1 the type exists
- * only to satisfy the {@code CalendarItem} sealed contract.
+ * Calendar entry wrapping an {@code important_dates} row where {@code kind=IMPORTANT}. Wire shape:
+ * {@code {"kind":"important","date":"YYYY-MM-DD","data":{...ImportantDateView...}}}. Use cases:
+ * back-to-school night, parent-teacher conferences, school-wide announcements that need a calendar
+ * marker but aren't full events.
+ *
+ * <p>Parent visibility is gated on {@code data.visibleToParents}; unlike birthdays, important
+ * entries have no per-student narrowing — once {@code visibleToParents=true}, every parent at the
+ * school sees it.
  */
-public record ImportantCalendarItem(LocalDate date, Object data) implements CalendarItem {}
+public record ImportantCalendarItem(LocalDate date, ImportantDateView data)
+    implements CalendarItem {}
