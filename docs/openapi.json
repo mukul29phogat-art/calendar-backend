@@ -9,6 +9,68 @@
     "description" : "Generated server url"
   } ],
   "paths" : {
+    "/api/v1/tasks/{id}" : {
+      "get" : {
+        "tags" : [ "task-controller" ],
+        "operationId" : "findById",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/TaskView"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put" : {
+        "tags" : [ "task-controller" ],
+        "operationId" : "update",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/CreateTaskRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/TaskView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/holidays/{id}" : {
       "get" : {
         "tags" : [ "holiday-controller" ],
@@ -37,7 +99,7 @@
       },
       "put" : {
         "tags" : [ "holiday-controller" ],
-        "operationId" : "update",
+        "operationId" : "update_1",
         "parameters" : [ {
           "name" : "id",
           "in" : "path",
@@ -117,7 +179,7 @@
       },
       "put" : {
         "tags" : [ "event-controller" ],
-        "operationId" : "update_1",
+        "operationId" : "update_2",
         "parameters" : [ {
           "name" : "id",
           "in" : "path",
@@ -534,33 +596,6 @@
         }
       }
     },
-    "/api/v1/tasks/{id}" : {
-      "get" : {
-        "tags" : [ "task-controller" ],
-        "operationId" : "findById",
-        "parameters" : [ {
-          "name" : "id",
-          "in" : "path",
-          "required" : true,
-          "schema" : {
-            "type" : "string",
-            "format" : "uuid"
-          }
-        } ],
-        "responses" : {
-          "200" : {
-            "description" : "OK",
-            "content" : {
-              "*/*" : {
-                "schema" : {
-                  "$ref" : "#/components/schemas/TaskView"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
     "/api/v1/students" : {
       "get" : {
         "tags" : [ "students-controller" ],
@@ -738,6 +773,133 @@
   },
   "components" : {
     "schemas" : {
+      "CreateTaskRequest" : {
+        "required" : [ "assigneeUserIds", "dueDate", "schoolId", "title" ],
+        "type" : "object",
+        "properties" : {
+          "title" : {
+            "maxLength" : 120,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "description" : {
+            "type" : "string"
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "classroomId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "assigneeUserIds" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string",
+              "format" : "uuid"
+            }
+          },
+          "dueDate" : {
+            "type" : "string",
+            "format" : "date"
+          },
+          "dueTime" : {
+            "$ref" : "#/components/schemas/LocalTime"
+          },
+          "status" : {
+            "type" : "string",
+            "enum" : [ "TODO", "IN_PROGRESS", "DONE" ]
+          },
+          "priority" : {
+            "type" : "string",
+            "enum" : [ "LOW", "MEDIUM", "HIGH" ]
+          }
+        }
+      },
+      "LocalTime" : {
+        "type" : "object",
+        "properties" : {
+          "hour" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "minute" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "second" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "nano" : {
+            "type" : "integer",
+            "format" : "int32"
+          }
+        }
+      },
+      "TaskView" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "orgId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "classroomId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "title" : {
+            "type" : "string"
+          },
+          "description" : {
+            "type" : "string"
+          },
+          "assigneeUserId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "dueDate" : {
+            "type" : "string",
+            "format" : "date"
+          },
+          "dueTime" : {
+            "$ref" : "#/components/schemas/LocalTime"
+          },
+          "status" : {
+            "type" : "string",
+            "enum" : [ "TODO", "IN_PROGRESS", "DONE" ]
+          },
+          "priority" : {
+            "type" : "string",
+            "enum" : [ "LOW", "MEDIUM", "HIGH" ]
+          },
+          "recurrenceId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "parentTaskGroupId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "createdAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "updatedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          }
+        }
+      },
       "CreateHolidayRequest" : {
         "required" : [ "date", "name", "schoolId" ],
         "type" : "object",
@@ -982,133 +1144,6 @@
           },
           "message" : {
             "type" : "string"
-          }
-        }
-      },
-      "CreateTaskRequest" : {
-        "required" : [ "assigneeUserIds", "dueDate", "schoolId", "title" ],
-        "type" : "object",
-        "properties" : {
-          "title" : {
-            "maxLength" : 120,
-            "minLength" : 0,
-            "type" : "string"
-          },
-          "description" : {
-            "type" : "string"
-          },
-          "schoolId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "classroomId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "assigneeUserIds" : {
-            "type" : "array",
-            "items" : {
-              "type" : "string",
-              "format" : "uuid"
-            }
-          },
-          "dueDate" : {
-            "type" : "string",
-            "format" : "date"
-          },
-          "dueTime" : {
-            "$ref" : "#/components/schemas/LocalTime"
-          },
-          "status" : {
-            "type" : "string",
-            "enum" : [ "TODO", "IN_PROGRESS", "DONE" ]
-          },
-          "priority" : {
-            "type" : "string",
-            "enum" : [ "LOW", "MEDIUM", "HIGH" ]
-          }
-        }
-      },
-      "LocalTime" : {
-        "type" : "object",
-        "properties" : {
-          "hour" : {
-            "type" : "integer",
-            "format" : "int32"
-          },
-          "minute" : {
-            "type" : "integer",
-            "format" : "int32"
-          },
-          "second" : {
-            "type" : "integer",
-            "format" : "int32"
-          },
-          "nano" : {
-            "type" : "integer",
-            "format" : "int32"
-          }
-        }
-      },
-      "TaskView" : {
-        "type" : "object",
-        "properties" : {
-          "id" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "schoolId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "orgId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "classroomId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "title" : {
-            "type" : "string"
-          },
-          "description" : {
-            "type" : "string"
-          },
-          "assigneeUserId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "dueDate" : {
-            "type" : "string",
-            "format" : "date"
-          },
-          "dueTime" : {
-            "$ref" : "#/components/schemas/LocalTime"
-          },
-          "status" : {
-            "type" : "string",
-            "enum" : [ "TODO", "IN_PROGRESS", "DONE" ]
-          },
-          "priority" : {
-            "type" : "string",
-            "enum" : [ "LOW", "MEDIUM", "HIGH" ]
-          },
-          "recurrenceId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "parentTaskGroupId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "createdAt" : {
-            "type" : "string",
-            "format" : "date-time"
-          },
-          "updatedAt" : {
-            "type" : "string",
-            "format" : "date-time"
           }
         }
       },
