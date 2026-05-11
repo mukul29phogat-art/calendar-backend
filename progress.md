@@ -29,6 +29,56 @@ Next part: X.Y+1
 
 ---
 
+## Part 7.2 (Series 7) — Calendar adds tasks (with recurrence expansion) — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **`task/TaskView`** — new response record matching the FE's `Task` type at `src/types/index.ts:76` (id, schoolId, orgId, classroomId?, title, description?, assigneeUserId, dueDate, dueTime?, status, priority, recurrenceId?, parentTaskGroupId?, createdAt, updatedAt). `@JsonInclude(NON_EMPTY)` drops null/empty optional fields. Two factory methods: `fromEntity(Task)` for non-recurring tasks (and series parents); `fromOccurrence(Task, OccurrenceSnapshot)` for recurring expansions — parent task id is reused but `dueDate`, `title`, `dueTime`, and `status` come from the per-occurrence snapshot so `task_instance_overrides` apply.
+- **`task/TaskReadService`** — slim read service used by the calendar feed. Series 8 will introduce the full `TaskService` (CRUD); this is the read path 7.2 needs without pulling the write surface in early.
+  - **D10 short-circuit**: PARENT actor returns `List.of()` immediately, no DB hit. (STAFF per-role narrowing — "only their assigned tasks" — lands in Part 7.4 with the full role visibility pass.)
+  - Non-recurring branch: `findNonRecurringInWindow(schoolId, from, to)` JPQL query, `recurrence_id IS NULL AND dueDate BETWEEN ? AND ? AND deleted_at IS NULL`. Each task wrapped as `TaskCalendarItem(dueDate, TaskView.fromEntity)`.
+  - Recurring branch: `findRecurringForSchool(schoolId)` returns every non-deleted recurring task; per task, `RecurrenceService.expand(task, from, to)` materializes occurrence dates (clipped by rule `untilDate` per Part 3.6). For each occurrence, `projectFor(task, date)` returns either `null` (skipped — drop) or an `OccurrenceSnapshot`. Non-null snapshots wrap as `TaskCalendarItem(snap.date, TaskView.fromOccurrence)`.
+- **`TaskRepository`** gains `findNonRecurringInWindow(UUID, LocalDate, LocalDate)` + `findRecurringForSchool(UUID)`. Both are tight JPQL with explicit named params.
+- **`calendar/TaskCalendarItem`** updated: `Object data` → `TaskView data`. The Javadoc now documents the per-occurrence projection contract.
+- **`calendar/CalendarReadService`** — `read(...)` now appends `taskReadService.findInWindow(...)` after the events. Order: events first (sorted by `start_dt` per Part 5.4), then tasks (sorted by the iteration over non-recurring then recurring). The FE re-sorts by date in any case; this just keeps the wire order stable across calls.
+
+Files changed (count: 8; 4 new, 4 modified):
+- `src/main/java/com/childcarewow/calendar/task/TaskView.java` — new.
+- `src/main/java/com/childcarewow/calendar/task/TaskReadService.java` — new.
+- `src/main/java/com/childcarewow/calendar/task/TaskRepository.java` — `+`two finder methods.
+- `src/main/java/com/childcarewow/calendar/calendar/TaskCalendarItem.java` — typed `data` to `TaskView`.
+- `src/main/java/com/childcarewow/calendar/calendar/CalendarReadService.java` — `+TaskReadService` dep, appends tasks to response.
+- `docs/openapi.json` — regenerated with `TaskView` schema + the now-typed `TaskCalendarItem.data` (was `Object` → emitted as `{}` in 7.1's baseline; now full `TaskView` shape).
+- `src/test/java/com/childcarewow/calendar/calendar/CalendarTaskReadIT.java` — new (5 tests).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 3m11s. JaCoCo ≥80% line; Spotless clean.
+- [x] `CalendarTaskReadIT` — 5/5 real-DB tests green:
+  - **`nonRecurringTaskInWindowAppearsAsOneItem`** — insert task at Sunrise dueDate=2026-05-10, query May 2026 → exactly one `TaskCalendarItem` with `date=2026-05-10`, title matches, `recurrenceId` is null.
+  - **`recurringWeeklyTaskExpandsToOneOccurrencePerWeek`** — WEEKLY rule `due_day_of_week=3` (JS Wed), dueDate=2026-05-06, untilDate=2026-12-31; query 2026-05-04 → 2026-05-31 yields exactly 4 occurrences (5/6, 5/13, 5/20, 5/27). All four share the parent task's `data.id`.
+  - **`skippedOverrideDropsTheOccurrence`** — same weekly rule but with a `task_instance_overrides` row `(taskId, 2026-05-20, skipped=true)` → 3 occurrences (5/6, 5/13, 5/27); 5/20 dropped.
+  - **`parentSeesNoTasks`** — insert task at Sunrise; query as a PARENT actor → response contains zero `TaskCalendarItem`s. D10 short-circuit verified.
+  - **`taskAtOtherSchoolNotReturned`** — insert task at Maplewood; query Sunrise → zero task items. Repository school-scope check verified.
+- [x] OpenAPI snapshot regenerated (TaskView schema + typed `TaskCalendarItem.data`).
+- [x] All earlier tests still green (no regression).
+
+Notes / surprises:
+- **`TaskView` ahead of `TaskService`.** Series 8 owns task writes, but 7.2 needs the read shape. Defining the record in the `task/` package now means 8.x will refine + reuse it rather than introducing a new view type. The 7.2 shape may need a derived field (overdue flag, inline soft-flags) in Series 8 — Javadoc flags this.
+- **Parent task `id` reused across occurrences.** Each `TaskCalendarItem` for a recurring task carries the parent task's `id` in `data.id`. The FE keys per-occurrence identity by `(id, date)`. Confirmed in the IT (`data.id` distinct count = 1 across 4 occurrences).
+- **STAFF per-role narrowing is intentionally not in 7.2.** The playbook for 7.2 only requires the recurrence-expansion and skip semantics; the broader "STAFF sees only assigned tasks" narrowing is Part 7.4's job. The slim 7.2 visibility gate is just D10 (PARENT → empty).
+- **Recurring-task fan-out is loaded entirely**, not pre-filtered by `untilDate >= from`. The expand call clips internally, but the SELECT brings every non-deleted recurring task for the school. With the 5-year `untilDate` validation cap (Part 3.6) the upper bound is small; if profiling in 7.6 shows this is hot, a `JOIN recurrence_rules WHERE until_date >= :from AND due_date <= :to` would tighten it.
+- **OpenAPI snapshot regeneration was required** because `TaskCalendarItem.data` changed from `Object` (emitted as `{}` placeholder) to a fully-specified `TaskView` schema. The Springdoc-generated spec now includes the `TaskView` component with all 15 fields; this is the intended drift for 7.2. 7.3 will trigger another regen when `Birthday`/`Important` data fields tighten.
+
+### Carry-forward
+
+- All previously-open carry-forwards remain unchanged. No new entries from this Part.
+
+Next part: **Part 7.3 — Calendar adds holidays + important_dates + birthdays.** Queries holidays for the window (with `approved=true`); queries important_dates with the kind discriminator (`BIRTHDAY` → `kind="birthday"`, `IMPORTANT` → `kind="important"`); wires the `filters` query param (currently inert). Will require an `ImportantDateView` (similar to `TaskView` here) and refining `Birthday`/`Important` calendar items from `Object` placeholders.
+
+---
+
 ## Part 7.1 (Series 7) — `GET /api/v1/calendar` skeleton — STATUS: ✅ done · **OPENS SERIES 7**
 Date: 2026-05-11
 Operator: Mukul Phogat

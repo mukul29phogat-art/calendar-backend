@@ -31,4 +31,33 @@ public interface TaskRepository extends JpaRepository<Task, UUID> {
 
   /** Lookup for the holiday-paint hook: every non-deleted task on a given (school, date). */
   List<Task> findBySchoolIdAndDueDateAndDeletedAtIsNull(UUID schoolId, LocalDate dueDate);
+
+  /**
+   * Non-recurring tasks for the calendar window (Part 7.2). {@code recurrence_id IS NULL} excludes
+   * series parents — those flow through {@link
+   * com.childcarewow.calendar.recurrence.RecurrenceService#expand} instead. Soft-deleted rows are
+   * skipped.
+   */
+  @Query(
+      "SELECT t FROM Task t "
+          + "WHERE t.schoolId = :schoolId "
+          + "AND t.recurrenceId IS NULL "
+          + "AND t.dueDate >= :from "
+          + "AND t.dueDate <= :to "
+          + "AND t.deletedAt IS NULL")
+  List<Task> findNonRecurringInWindow(
+      @Param("schoolId") UUID schoolId, @Param("from") LocalDate from, @Param("to") LocalDate to);
+
+  /**
+   * Recurring tasks for the school (Part 7.2). The caller passes each one through {@link
+   * com.childcarewow.calendar.recurrence.RecurrenceService#expand} to materialize the in-window
+   * occurrence dates; {@code expand} clips by the rule's {@code untilDate} on its own. The 5-year
+   * validation cap on {@code untilDate} keeps this set bounded.
+   */
+  @Query(
+      "SELECT t FROM Task t "
+          + "WHERE t.schoolId = :schoolId "
+          + "AND t.recurrenceId IS NOT NULL "
+          + "AND t.deletedAt IS NULL")
+  List<Task> findRecurringForSchool(@Param("schoolId") UUID schoolId);
 }
