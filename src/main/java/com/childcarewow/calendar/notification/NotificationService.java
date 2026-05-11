@@ -138,6 +138,82 @@ public class NotificationService {
   }
 
   /**
+   * Diff-driven dispatcher for task updates.
+   *
+   * <ul>
+   *   <li><b>Assignee changed</b> ({@code prev.assignee != next.assignee}): writes {@code
+   *       TASK_ASSIGNED} to the NEW assignee + {@code TASK_UPDATED} to the OLD one (the old
+   *       assignee gets a heads-up that the task was reassigned away). When both happen, the
+   *       status-change branch is skipped — the assignment notification carries enough context for
+   *       the new owner.
+   *   <li><b>Status changed only</b> ({@code prev.status != next.status}, same assignee): writes
+   *       {@code TASK_STATUS_CHANGED} to the assignee. This is the path the Kanban drag-and-drop
+   *       hits (8.5 will add a dedicated PATCH endpoint that goes through the same notification
+   *       method).
+   *   <li><b>Any other meaningful change</b> (title, description, dueDate, dueTime, priority,
+   *       classroomId): writes {@code TASK_UPDATED} to the assignee.
+   *   <li><b>No-op</b> if the prev and next are field-equal on the diff dimensions above. An audit
+   *       row still lands for the PUT (via {@code @Audited}), but no notification.
+   * </ul>
+   */
+  @Transactional
+  public void dispatchTaskUpdated(Task prev, Task next) {
+    if (prev == null || next == null) {
+      return;
+    }
+    UUID prevAssignee = prev.getAssigneeUserId();
+    UUID nextAssignee = next.getAssigneeUserId();
+
+    if (!java.util.Objects.equals(prevAssignee, nextAssignee)) {
+      // Re-assignment. New assignee gets TASK_ASSIGNED; old one gets a heads-up TASK_UPDATED.
+      writeTaskNotification(next, NotificationKind.TASK_ASSIGNED, "Assigned: " + next.getTitle());
+      if (prevAssignee != null) {
+        // Build a synthetic Task pointing at the OLD assignee for the heads-up. We don't mutate
+        // `prev` itself (it's a detached snapshot the caller still holds); construct a fresh row.
+        Task heads = synthHandoffNotice(prev, next, prevAssignee);
+        writeTaskNotification(
+            heads, NotificationKind.TASK_UPDATED, "Reassigned away: " + next.getTitle());
+      }
+      return;
+    }
+
+    if (!java.util.Objects.equals(prev.getStatus(), next.getStatus())) {
+      writeTaskNotification(
+          next, NotificationKind.TASK_STATUS_CHANGED, "Status changed: " + next.getTitle());
+      return;
+    }
+
+    if (taskMeaningfullyChanged(prev, next)) {
+      writeTaskNotification(next, NotificationKind.TASK_UPDATED, "Updated: " + next.getTitle());
+    }
+  }
+
+  /**
+   * Builds a non-persisted Task carrying the OLD assignee but the NEW row's identity (id, org,
+   * school, dueDate, title). Used by {@link #dispatchTaskUpdated} so the "reassigned away"
+   * notification renders correctly to the prior assignee without re-querying the DB.
+   */
+  private static Task synthHandoffNotice(Task prev, Task next, UUID oldAssignee) {
+    Task t = new Task();
+    t.setId(next.getId());
+    t.setOrgId(next.getOrgId());
+    t.setSchoolId(next.getSchoolId());
+    t.setTitle(prev.getTitle()); // the title the prior assignee remembers
+    t.setAssigneeUserId(oldAssignee);
+    t.setDueDate(next.getDueDate());
+    return t;
+  }
+
+  private static boolean taskMeaningfullyChanged(Task prev, Task next) {
+    return !java.util.Objects.equals(prev.getTitle(), next.getTitle())
+        || !java.util.Objects.equals(prev.getDescription(), next.getDescription())
+        || !java.util.Objects.equals(prev.getDueDate(), next.getDueDate())
+        || !java.util.Objects.equals(prev.getDueTime(), next.getDueTime())
+        || !java.util.Objects.equals(prev.getPriority(), next.getPriority())
+        || !java.util.Objects.equals(prev.getClassroomId(), next.getClassroomId());
+  }
+
+  /**
    * Single-recipient writer for task notifications. Skips entirely if assignee is null (defensive).
    * Holiday-pause check fires against the task's school + due_date.
    */

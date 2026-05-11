@@ -119,15 +119,119 @@ public class TaskService {
     return saved.stream().map(TaskView::fromEntity).toList();
   }
 
-  /**
-   * Loads a task for the controller's pre-update policy gate (lands in Part 8.4). 404 otherwise.
-   */
+  /** Loads a task for the controller's pre-update / pre-delete policy gate. 404 otherwise. */
   @Transactional(readOnly = true)
   public Task loadForPolicyCheck(UUID id) {
     return taskRepo
         .findById(id)
         .filter(x -> x.getDeletedAt() == null)
         .orElseThrow(() -> new com.childcarewow.calendar.exception.NotFoundException("Task", id));
+  }
+
+  /**
+   * Updates a task in place. Same input shape as create ({@link CreateTaskRequest}); the {@code
+   * schoolId} field is immutable on this path (changing schools is a delete-and-recreate, matching
+   * the event-update convention from Part 5.5). Multi-assignee group editing is not supported on
+   * this path — for 8.4, only single-assignee tasks can be edited; {@code assigneeUserIds.size()}
+   * must be 1.
+   *
+   * <p><b>Holiday block on date-moves only.</b> The holiday SELECT fires only when {@code
+   * req.dueDate()} differs from {@code existing.dueDate()}. Same pattern as {@code
+   * EventService.update}'s {@code startMoved} gate — same-date title / status / priority edits
+   * never re-check the holiday table.
+   *
+   * <p><b>Soft-flag recompute always runs.</b> Any change to date / assignee / dueTime can
+   * introduce or remove same-assignee same-day overlap pairs (Part 3.12). The recompute clears the
+   * existing DOUBLE_BOOKING flags involving the task and re-derives them from the post-save state.
+   *
+   * <p><b>Notification dispatch</b> via {@link NotificationService#dispatchTaskUpdated} captures
+   * the diff: status change → TASK_STATUS_CHANGED to the assignee; assignee change → TASK_ASSIGNED
+   * to the new assignee + TASK_UPDATED to the old one; any other meaningful change → TASK_UPDATED
+   * to the assignee.
+   */
+  @Transactional
+  public TaskView update(UUID id, CreateTaskRequest req, UserPrincipal actor) {
+    Task existing =
+        taskRepo
+            .findById(id)
+            .filter(x -> x.getDeletedAt() == null)
+            .orElseThrow(
+                () -> new com.childcarewow.calendar.exception.NotFoundException("Task", id));
+
+    validateUpdateRequest(req);
+
+    if (!existing.getSchoolId().equals(req.schoolId())) {
+      throw new ValidationException("schoolId", "schoolId is immutable");
+    }
+
+    UUID newAssignee = req.assigneeUserIds().get(0);
+
+    // Date-move gate: only re-check holiday + recompute-trigger when the dueDate actually changes.
+    boolean dateMoved = !existing.getDueDate().equals(req.dueDate());
+    if (dateMoved) {
+      String holidayName = findApprovedHolidayName(req.schoolId(), req.dueDate());
+      if (holidayName != null) {
+        throw new TaskOnHolidayException(holidayName);
+      }
+    }
+
+    // Platform validator gates re-run on update (classroom, new assignee). We intentionally do NOT
+    // re-validate schoolId since it's immutable above.
+    if (req.classroomId() != null) {
+      platformValidator.assertClassroomExists(req.classroomId());
+      platformValidator.assertClassroomBelongsToSchool(req.classroomId(), req.schoolId());
+    }
+    platformValidator.assertUserExists(newAssignee);
+
+    // Snapshot via a detached copy BEFORE mutating the managed entity. The dispatcher inspects
+    // prev.status / prev.assigneeUserId / prev.title etc. to decide which notification kind to
+    // write, so the snapshot must reflect pre-mutation state.
+    Task prev = snapshotForDiff(existing);
+
+    existing.setTitle(req.title());
+    existing.setDescription(req.description());
+    existing.setClassroomId(req.classroomId());
+    existing.setAssigneeUserId(newAssignee);
+    existing.setDueDate(req.dueDate());
+    existing.setDueTime(req.dueTime());
+    existing.setStatus(req.statusOrDefault());
+    existing.setPriority(req.priorityOrDefault());
+    existing.setUpdatedByUserId(actor.id());
+
+    Task saved = taskRepo.saveAndFlush(existing);
+    em.refresh(saved);
+
+    softFlagService.recomputeForTask(saved.getId());
+    notificationService.dispatchTaskUpdated(prev, saved);
+
+    return TaskView.fromEntity(saved);
+  }
+
+  /** Detached snapshot of fields the post-update notification diff inspects. */
+  private static Task snapshotForDiff(Task t) {
+    Task s = new Task();
+    s.setId(t.getId());
+    s.setOrgId(t.getOrgId());
+    s.setSchoolId(t.getSchoolId());
+    s.setClassroomId(t.getClassroomId());
+    s.setTitle(t.getTitle());
+    s.setDescription(t.getDescription());
+    s.setAssigneeUserId(t.getAssigneeUserId());
+    s.setDueDate(t.getDueDate());
+    s.setDueTime(t.getDueTime());
+    s.setStatus(t.getStatus());
+    s.setPriority(t.getPriority());
+    return s;
+  }
+
+  private static void validateUpdateRequest(CreateTaskRequest req) {
+    if (req.assigneeUserIds() == null || req.assigneeUserIds().isEmpty()) {
+      throw new ValidationException("assigneeUserIds", "at least one assignee is required");
+    }
+    if (req.assigneeUserIds().size() != 1) {
+      throw new ValidationException(
+          "assigneeUserIds", "PUT supports single-assignee tasks only; group-edit is a later part");
+    }
   }
 
   // -- validation ------------------------------------------------------------

@@ -29,6 +29,68 @@ Next part: X.Y+1
 
 ---
 
+## Part 8.4 (Series 8) — `PUT /api/v1/tasks/{id}` update flow — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **`TaskController.update`** — `PUT /api/v1/tasks/{id}` with `@Audited("TASK_UPDATE", targetType="TASK")`. Resource-bearing policy gate: `service.loadForPolicyCheck(id)` returns the existing entity, then `policy.assertCan(actor, "task.edit", existing)` runs Part 3.2's STAFF-only-own-assigned narrowing (ORG_ADMIN always; SCHOOL_ADMIN in their schools; STAFF only when `assigneeUserId == actor.id`; PARENT denied). Body uses the same `CreateTaskRequest` record as POST.
+- **`TaskService.update(id, req, actor)`** — the orchestrating method:
+  1. Load existing (404 if missing/soft-deleted).
+  2. `validateUpdateRequest`: `assigneeUserIds.size() == 1` only — multi-assignee group editing is a later concern; rejected with explicit "group-edit is a later part" message.
+  3. **`schoolId` immutable.** Cross-school moves are delete-and-recreate (matches `EventService.update` from Part 5.5).
+  4. **Holiday block fires only on date-moves.** `dateMoved = !existing.getDueDate().equals(req.dueDate())` gates the SELECT — same pattern as `EventService.update`'s `startMoved`. A title-only or status-only edit never re-queries the holidays table, even if a holiday exists at a nearby date.
+  5. Platform validator gates re-run on update: classroom (if set) + classroom-belongs + new assignee. School re-check skipped (immutable above).
+  6. **Detached `snapshotForDiff(existing)`** captures the pre-mutation fields the notification dispatcher needs (status, assigneeUserId, title, description, dueDate, dueTime, priority, classroomId). Separate object — mutating the managed entity AFTER snapshot doesn't shift the snapshot's identity. Same pattern as Part 5.5 / `EventService.snapshotForDiff`.
+  7. Mutate the managed entity in place: title, description, classroomId, assigneeUserId, dueDate, dueTime, status, priority, updatedByUserId.
+  8. `saveAndFlush + em.refresh` to bring back DB-managed `updated_at`.
+  9. **`softFlagService.recomputeForTask(saved.getId())` always runs.** Any change to date / assignee / dueTime can introduce or remove same-assignee same-day overlap pairs (Part 3.12).
+  10. `notificationService.dispatchTaskUpdated(prev, saved)` — the diff-driven dispatcher.
+- **`NotificationService.dispatchTaskUpdated(prev, next)`** — new diff-driven dispatcher:
+  - **Assignee changed** → writes `TASK_ASSIGNED` to the NEW assignee AND `TASK_UPDATED` to the OLD one (heads-up reassignment notice). When this fires, the status-changed branch is intentionally skipped — the assignment notification carries enough context for the new owner.
+  - **Status changed only** (same assignee) → writes `TASK_STATUS_CHANGED` to the assignee. This is the path the Kanban drag-and-drop will hit (Part 8.5 adds a dedicated PATCH that goes through the same notification path).
+  - **Any other meaningful change** (title, description, dueDate, dueTime, priority, classroomId) → writes `TASK_UPDATED` to the assignee.
+  - **No-op** if prev and next are field-equal on the diff dimensions above. The audit row still lands (via `@Audited`) but no notification.
+  - **`synthHandoffNotice(prev, next, oldAssignee)`** — non-persisted Task helper carrying the OLD assignee but the NEW row's identity/title. Lets the reassignment heads-up render correctly to the prior assignee without re-querying the DB.
+
+Files changed (count: 5; 1 new, 4 modified, 1 progress):
+- `src/main/java/com/childcarewow/calendar/task/TaskService.java` — `+update`, `+snapshotForDiff`, `+validateUpdateRequest`.
+- `src/main/java/com/childcarewow/calendar/task/TaskController.java` — `+PutMapping("/{id}")` + Javadoc.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationService.java` — `+dispatchTaskUpdated`, `+synthHandoffNotice`, `+taskMeaningfullyChanged`.
+- `src/test/java/com/childcarewow/calendar/task/TaskUpdateIT.java` — new (9 ITs).
+- `docs/openapi.json` — regenerated baseline includes the new PUT route.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m30s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `TaskUpdateIT` — 9/9 real-DB tests green:
+  - **`titleAndPriorityUpdateInPlace`** — title + description + priority round-trip through `update`; response reflects all three.
+  - **`statusChangeWritesTaskStatusChangedNotification`** — TODO → IN_PROGRESS triggers exactly one TASK_STATUS_CHANGED notification.
+  - **`dateMoveToHolidayThrows`** — task on Dec 24, holiday created on Dec 25, move task to Dec 25 → `TaskOnHolidayException` carrying "IT-tu-Christmas".
+  - **`sameDateEditDoesNotRecheckHolidayTable`** — task on Dec 26; holiday on Dec 25 (adjacent date); title-only edit succeeds — confirms the `dateMoved` gate.
+  - **`reassignmentDispatchesTaskAssignedToNewAndTaskUpdatedToOld`** — Maya → Tom reassignment yields exactly one TASK_ASSIGNED row addressed to Tom AND one TASK_UPDATED row addressed to Maya.
+  - **`schoolIdImmutableOnUpdate`** — moving task from Sunrise to Maplewood → `ValidationException("schoolId")`.
+  - **`unknownIdReturnsNotFound`** — random UUID → `NotFoundException`.
+  - **`multiAssigneeOnPutRejected`** — `[Maya, Tom]` → `ValidationException` containing "single-assignee".
+  - **`titleOnlyChangeWritesTaskUpdated`** — title-only edit (same assignee, same status) → exactly one TASK_UPDATED row.
+- [x] OpenAPI snapshot regenerated to include the new PUT route.
+- [x] All earlier tests still green — `TaskCreateIT` (10), `TaskReadIT` (9), `TaskControllerTest` (7), `CalendarTaskReadIT` (5).
+
+Notes / surprises:
+- **The `dispatchTaskUpdated` priority order matters.** "Reassignment beats status change" is the right interpretation — when a task is reassigned AND its status changes in the same PUT (e.g., admin moves it to a new owner and bumps to IN_PROGRESS), the new owner gets ONE notification (TASK_ASSIGNED) carrying everything they need to know. Writing both notifications would be noise. The old owner gets TASK_UPDATED ("reassigned away"). Documented in Javadoc.
+- **`synthHandoffNotice` builds a non-persisted Task** so the per-recipient writer (`writeTaskNotification`) can address the OLD assignee without mutating the snapshot. The task row in the DB is correctly assigned to the NEW assignee; we just need a transient object with the OLD `assigneeUserId` for the notification's recipient resolution. This is the same approach used by the audit aspect when it needs a synthetic event view.
+- **STAFF-only-own-assigned rejection happens at the controller layer**, not the service. The `policy.assertCan(actor, "task.edit", existing)` gate fires BEFORE `service.update` runs — STAFF trying to edit someone else's task gets a `ForbiddenException` (403) without the service even seeing the request. Tests for this path live in the slice test (TaskControllerTest) where the security chain runs end-to-end; service-level IT skips it because we exercise the service directly with an admin actor.
+- **`taskMeaningfullyChanged` deliberately excludes `parentTaskGroupId`** from the diff. That field is set at create time and isn't directly editable; a future "split task group" operation would need its own service method.
+- **The 5.5 pattern for events used `loadForPolicyCheck` in the controller + a separate `service.update` call** that re-loads the entity. Tasks now do the same: controller calls `loadForPolicyCheck` (gives the policy gate the entity), service's `update` re-loads to ensure transactional consistency. Two reads, but they share the L1 cache within the request scope — no perf concern.
+
+### Carry-forward (none cleared, none added)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 8.5 — `PATCH /api/v1/tasks/{id}/status`** focused status-only mutation for the Kanban drag-and-drop. Smaller wire shape than the full PUT (just `{status: "..."}`); same `task.edit` policy gate; bypasses the date / assignee / title diff entirely and goes straight to TASK_STATUS_CHANGED dispatch. Avoids round-tripping the entire task body for a one-field change.
+
+---
+
 ## Part 8.3 (Series 8) — `GET /api/v1/tasks` window + `/api/v1/tasks/{id}` detail — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat

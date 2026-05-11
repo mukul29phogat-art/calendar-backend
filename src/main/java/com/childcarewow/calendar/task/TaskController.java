@@ -14,6 +14,7 @@ import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -84,5 +85,22 @@ public class TaskController {
   @GetMapping("/{id}")
   public TaskView findById(@AuthenticationPrincipal UserPrincipal actor, @PathVariable UUID id) {
     return readService.findById(id, actor);
+  }
+
+  /**
+   * Updates a task. Resource-bearing policy gate: the actor must be able to {@code task.edit} THIS
+   * specific task — ORG_ADMIN always; SCHOOL_ADMIN if task's school is in their scope; STAFF only
+   * if they're the assignee; PARENT never. Loads the task first so the policy check has the entity
+   * in hand.
+   */
+  @PutMapping("/{id}")
+  @Audited(action = "TASK_UPDATE", targetType = "TASK")
+  public TaskView update(
+      @AuthenticationPrincipal UserPrincipal actor,
+      @PathVariable UUID id,
+      @Valid @RequestBody CreateTaskRequest req) {
+    Task existing = service.loadForPolicyCheck(id);
+    policy.assertCan(actor, "task.edit", existing);
+    return service.update(id, req, actor);
   }
 }
