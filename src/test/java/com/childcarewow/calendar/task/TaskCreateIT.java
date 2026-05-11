@@ -175,6 +175,59 @@ class TaskCreateIT {
   }
 
   @Test
+  void twoSameDaySameAssigneeTasksCreateBidirectionalDoubleBookingPair() {
+    // Part 8.8 verification: TaskService.create → recomputeForTask wires up the bidirectional
+    // DOUBLE_BOOKING flag pair (A→B + B→A) when two same-school + same-assignee + same-dueDate
+    // TODO tasks exist with overlapping dueTime (both-null counts as overlap per Part 3.12).
+    LocalDate date = LocalDate.of(2027, 3, 4);
+    UUID t1 =
+        taskService
+            .create(
+                new CreateTaskRequest(
+                    "IT-tc-pair-a",
+                    null,
+                    SUNRISE,
+                    null,
+                    List.of(MAYA),
+                    date,
+                    null,
+                    TaskStatus.TODO,
+                    TaskPriority.MEDIUM),
+                admin())
+            .get(0)
+            .id();
+    UUID t2 =
+        taskService
+            .create(
+                new CreateTaskRequest(
+                    "IT-tc-pair-b",
+                    null,
+                    SUNRISE,
+                    null,
+                    List.of(MAYA),
+                    date,
+                    null,
+                    TaskStatus.TODO,
+                    TaskPriority.MEDIUM),
+                admin())
+            .get(0)
+            .id();
+
+    Integer count =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM conflict_flags "
+                + "WHERE entity_type = 'TASK' AND conflict_type = 'DOUBLE_BOOKING' "
+                + "AND ((entity_id = ? AND conflicting_entity_id = ?) "
+                + "  OR (entity_id = ? AND conflicting_entity_id = ?))",
+            Integer.class,
+            t1,
+            t2,
+            t2,
+            t1);
+    assertThat(count).as("bidirectional A↔B pair after second create").isEqualTo(2);
+  }
+
+  @Test
   void notificationRowAndRecipientWrittenForAssignee() {
     CreateTaskRequest req =
         new CreateTaskRequest(
