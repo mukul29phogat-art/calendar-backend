@@ -1,6 +1,7 @@
 package com.childcarewow.calendar.notification;
 
 import com.childcarewow.calendar.event.Event;
+import com.childcarewow.calendar.task.Task;
 import com.childcarewow.calendar.timezone.TimezoneService;
 import java.time.LocalDate;
 import java.util.HashSet;
@@ -117,6 +118,73 @@ public class NotificationService {
       return;
     }
     writeWithRecipients(event, NotificationKind.EVENT_CANCELLED, "Cancelled: " + event.getTitle());
+  }
+
+  // -- task dispatchers (Part 8.1+) -----------------------------------------
+
+  /**
+   * Writes a TASK_ASSIGNED row addressed to the task's assignee. Tasks have a single recipient (the
+   * assignee) — unlike events, no fan-out to parents/students. Holiday-pause check still applies
+   * via {@link #writeTaskNotification}; in practice a task's due_date is hard-blocked from falling
+   * on a holiday (Part 8.1), so the pause path is only reachable when a holiday is created
+   * retroactively for the task's date AND a TASK_UPDATED / TASK_STATUS_CHANGED fires after.
+   */
+  @Transactional
+  public void dispatchTaskCreated(Task task) {
+    if (task == null) {
+      return;
+    }
+    writeTaskNotification(task, NotificationKind.TASK_ASSIGNED, "Assigned: " + task.getTitle());
+  }
+
+  /**
+   * Single-recipient writer for task notifications. Skips entirely if assignee is null (defensive).
+   * Holiday-pause check fires against the task's school + due_date.
+   */
+  private void writeTaskNotification(Task task, NotificationKind kind, String baseMessage) {
+    UUID assignee = task.getAssigneeUserId();
+    if (assignee == null) {
+      log.debug("Task {} has no assignee; skipping {} notification", task.getId(), kind);
+      return;
+    }
+
+    String pausedReason = checkTaskPauseReason(task);
+    String message =
+        pausedReason == null ? baseMessage : "[paused: " + pausedReason + "] " + baseMessage;
+
+    Notification n = new Notification();
+    n.setOrgId(task.getOrgId());
+    n.setSchoolId(task.getSchoolId());
+    n.setKind(kind);
+    n.setMessage(message);
+    n.setRelatedEntityId(task.getId());
+    n.setRelatedEntityTitle(task.getTitle());
+    n.setPaused(pausedReason != null);
+    n.setPausedReason(pausedReason);
+    n.setPayload("{}");
+    Notification saved = notificationRepo.save(n);
+
+    NotificationRecipient r = new NotificationRecipient();
+    r.setNotificationId(saved.getId());
+    r.setUserId(assignee);
+    recipientRepo.save(r);
+  }
+
+  /**
+   * Approved-holiday lookup keyed by the task's school-local {@code due_date} (already a {@link
+   * LocalDate}, no instant conversion needed). Returns the formatted pause reason or {@code null}
+   * when no holiday blocks.
+   */
+  private String checkTaskPauseReason(Task task) {
+    String name =
+        calendarJdbc.query(
+            "SELECT name FROM holidays "
+                + "WHERE school_id = ? AND date = ? AND approved = true AND deleted_at IS NULL "
+                + "LIMIT 1",
+            rs -> rs.next() ? rs.getString(1) : null,
+            task.getSchoolId(),
+            task.getDueDate());
+    return name == null ? null : "Holiday: " + name;
   }
 
   // -- core write path -------------------------------------------------------
