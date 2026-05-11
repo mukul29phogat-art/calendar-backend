@@ -29,6 +29,76 @@ Next part: X.Y+1
 
 ---
 
+## Part 6.7 (Series 6) — Nager.Date scheduled sync job + ShedLock — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **`federalholiday/` package** (4 new classes):
+  - `NagerHoliday` — `@JsonIgnoreProperties(ignoreUnknown = true)` record `(LocalDate date, String localName)`. Minimal projection over Nager v3's `/api/v3/PublicHolidays/{year}/{country}` response shape (which also carries `name`, `countryCode`, `fixed`, `global`, `counties`, `launchYear`, `types`).
+  - `NagerDateClient` — interface so the sync job is mockable in IT without an HTTP fixture.
+  - `NagerDateClientImpl` — `RestClient` impl with the host **hardcoded** to `https://date.nager.at`. Per playbook line 2922: an attacker who can flip a config value could otherwise SSRF this scheduled fetch at an internal endpoint, and Nager is a free public API with no operational reason to ever point elsewhere.
+  - `FederalHolidaySyncJob` — `@Component` with `@Scheduled(cron = "0 0 3 * * *", zone = "UTC")` + `@SchedulerLock(name = "NAGER_SYNC", lockAtMostFor = "PT30M", lockAtLeastFor = "PT1M")` on the scheduled entry point. Two constructors: a public `@Autowired` ctor for the prod path (`Clock.system(ZoneOffset.UTC)`), and a package-private 5-arg ctor that accepts a pinned `Clock` for tests. **The `@Autowired` is mandatory** — Spring 4.3's single-constructor auto-detection rule doesn't apply when two ctors exist; without the annotation Spring falls back to looking for a default ctor and fails at bean creation. Caught by `CalendarApplicationTests.contextLoads` on the first verify run.
+- **Idempotency** is enforced at two layers per the architecture spec:
+  1. **Service-layer pre-fetch.** Before each `(org, country, year)` group iterates Nager rows, `loadExistingFederalsForYear(schoolIds, year)` runs one SELECT over the calendar DB for `source='FEDERAL' AND deleted_at IS NULL AND date IN [year-01-01, year-12-31]` and builds a `Set<(school_id, date)>`. The Nager rows are filtered against this set. This is the critical idempotency check — it covers the case where an admin has already approved a previously-synced row (the row no longer matches the pending-federal partial index, so the DB-level conflict clause wouldn't fire; without the pre-fetch a fresh `approved=false` row would be inserted alongside the approved one).
+  2. **DB-level `ON CONFLICT … DO NOTHING`** as a race-safety net for concurrent sync runs.
+- **Failure semantics.** Per-fetch `RuntimeException`s (network, 5xx, malformed payload) are caught, logged at WARN, recorded in the audit row's `errors` field as `"{year}/{country}:{exceptionSimpleName}"`, and the loop continues. Existing holiday rows are not touched on failure paths.
+- **`auditService.log(null, "NAGER_SYNC", null, null, null, "FederalHolidaySyncJob", meta)`** at the end of each run. `meta` is a `HashMap<String, Object>` with `years`, `schools_count`, `inserted`, `skipped`, `errors` — serialized to jsonb. `actorUserId = null` because the job is system-driven. `user_agent = "FederalHolidaySyncJob"` makes the row trivial to find via `WHERE user_agent = 'FederalHolidaySyncJob'`.
+- **`scheduling/SchedulingConfig.java`** (committed in this PR, scaffolded by a prior session). `@EnableSchedulerLock(defaultLockAtMostFor = "PT30M")`; `LockProvider` bean wraps a JdbcTemplate around the calendar DataSource (NOT the autowired primary one — separate connection so `@Transactional` propagation on the scheduled method is independent of the lock lifecycle); `.usingDbTime()` makes lock expiry use Postgres `now()` instead of the JVM clock, eliminating multi-instance clock-drift races.
+- **`V9__shedlock.sql`** — the ShedLock lock table schema is dictated by `JdbcTemplateLockProvider` and should not be altered. `name varchar(64) PK, lock_until timestamptz NOT NULL, locked_at timestamptz NOT NULL, locked_by varchar(255) NOT NULL`.
+- **`IdempotencyPurgeJob.purge()`** gains `@SchedulerLock(name = "IDEMPOTENCY_PURGE", lockAtMostFor = "PT5M")` — closing the carry-forward from Series 3. The Javadoc no longer says "deferred to Series 11.4."
+- **`pom.xml`** adds `shedlock-spring:5.16.0` + `shedlock-provider-jdbc-template:5.16.0` (BOM-friendly versions, work with Spring Boot 3.3.x).
+
+Files changed (count: 9; 7 new, 2 modified):
+- `pom.xml` — `+`two ShedLock deps.
+- `src/main/java/com/childcarewow/calendar/idempotency/IdempotencyPurgeJob.java` — `+@SchedulerLock` on `purge()`; Javadoc refreshed.
+- `src/main/java/com/childcarewow/calendar/scheduling/SchedulingConfig.java` — new (committed; scaffolded by prior session).
+- `src/main/java/com/childcarewow/calendar/federalholiday/NagerHoliday.java` — new.
+- `src/main/java/com/childcarewow/calendar/federalholiday/NagerDateClient.java` — new.
+- `src/main/java/com/childcarewow/calendar/federalholiday/NagerDateClientImpl.java` — new.
+- `src/main/java/com/childcarewow/calendar/federalholiday/FederalHolidaySyncJob.java` — new.
+- `src/main/resources/db/migration/V9__shedlock.sql` — new (committed; scaffolded by prior session).
+- `src/test/java/com/childcarewow/calendar/federalholiday/FederalHolidaySyncJobIT.java` — new (5 tests).
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS in 1m17s. 191 tests, 0 failures, 0 errors, 2 skipped (Linux-only Testcontainers ITs); Spotless clean; JaCoCo ≥80% line bundle.
+- [x] **`FederalHolidaySyncJobIT` — 5/5 tests green** against real calendar + platform Postgres:
+  - **`insertsPendingFederalsForEachSchoolAndYear`** — 2 schools × 3 distinct (year, date) Nager rows → 6 inserts. Verifies counts at each school separately (3 at Sunrise, 3 at Maplewood).
+  - **`idempotentReRunDoesNotInsertDuplicates`** — first sync: 4 inserts; second sync against the same Nager response: 0 inserted, 4 skipped (pre-fetch finds every pair). Row count stays at 4.
+  - **`existingApprovedFederalDoesNotGetDuplicatedAsPending`** — pre-inserts one approved federal at (Sunrise, 2026-07-04); after sync, that school+date still has exactly one row, still approved. Sister school (Maplewood) and the other holiday date both get pending rows. This is the test that would fail without the service-layer pre-fetch.
+  - **`nagerFetchErrorIsRecordedAndDoesNotBlockOtherGroups`** — 2026 fetch throws, 2027 succeeds. 2026 rows: 0 inserted. 2027 rows: 2 inserted. `errors` list contains `"2026/US:RuntimeException"`.
+  - **`writesAuditRowWithSyncSummary`** — asserts `audit_events` has one `action=NAGER_SYNC` row with `user_agent="FederalHolidaySyncJob"` and metadata containing `years`, `inserted`, `skipped`, `schools_count: 2`.
+- [x] `IdempotencyPurgeJobTest` — 3/3 still green after the `@SchedulerLock` addition. The annotation doesn't take effect under the unit-test path (no Spring proxy), so the existing tests don't need to know about the lock.
+- [x] OpenAPI snapshot unchanged (this Part is internal — no controller routes added).
+
+Notes / surprises:
+- **`ON CONFLICT ON CONSTRAINT uq_holidays_federal_pending` doesn't work.** The playbook + architecture spec §7.8 prescribed it, and Part 1.3 named the index specifically to enable it. But Postgres only accepts `ON CONFLICT ON CONSTRAINT <name>` for **non-partial** unique constraints — and `uq_holidays_federal_pending` is a *partial* unique index (it has a `WHERE` predicate). The first verify run failed every test with `ERROR: constraint "uq_holidays_federal_pending" for table "holidays" does not exist`. Resolution: switch to the **inference clause** form, `ON CONFLICT (school_id, date) WHERE source = 'FEDERAL' AND approved = false AND deleted_at IS NULL DO NOTHING`. The WHERE predicate must match the index's predicate byte-for-byte or Postgres fails to pick the index. Documented inline in the upsert SQL; architecture spec §7.8 needs a docs amendment.
+- **Two-constructor + `@Autowired` rule.** Spring 4.3 auto-detects a single constructor; with two, it falls back to looking for a no-arg ctor unless one is `@Autowired`-annotated. Easy to forget when adding a test seam. Pattern reusable for any future job/service that needs a `Clock` injection seam.
+- **`@SchedulerLock` is on `runScheduled()`, not `sync()`.** The annotation only takes effect through the Spring AOP proxy. Tests call `sync()` directly on a manually-constructed job instance, bypassing the proxy — and bypassing ShedLock. This is the intentional shape: tests don't need ShedLock infrastructure spun up; CI Postgres doesn't need an empty `shedlock` table for the IT to pass.
+- **Postgres jsonb `::text` cast is pretty-printed.** The audit-row assertion initially used `"schools_count":2` (no space) but Postgres normalises to `"schools_count": 2` (with space). Substring assertion fixed accordingly.
+- **The `@MockBean NagerDateClient` is wired into the Spring context AND passed into the manually-constructed test job.** Since `@MockBean` replaces the bean in the context, `@Autowired NagerDateClient` would yield the same mock. The IT pattern (autowire from context + reconstruct the job with a fixed `Clock`) is cleaner than trying to override the Clock via `@DynamicPropertySource`.
+- **CalendarApplicationTests.contextLoads requires Docker compose up.** Failed at first because `calendar-db` wasn't running. Not a regression — this is a `@SpringBootTest` smoke that needs the real DB. Standard "docker compose up -d calendar-db platform-db" pre-step.
+
+### Carry-forward (cleared)
+
+- **ShedLock for `IdempotencyPurgeJob` — DONE.** Was tracked since Part 3.13.
+
+### Carry-forward (still open)
+
+- Bump GitHub Actions versions before Node 20 deprecation (2026-09-16).
+- Application config externalization (Part 0.8 — Spring Cloud AWS Secrets Manager).
+- COPPA-blocking CUSTOM event recipient narrowing to `event_students` (Part 12.4).
+- STUDENT_VIEW audit on CUSTOM event reads (deferred from 5.4).
+- MapStruct adoption when Series 6+ accumulates 3+ mappers.
+- AttachmentController slice + Supabase live integration — Series 11.4.
+- Frontend codegen Part 4.6 (FE repo).
+- FE cutover Parts 6.2a/6.2b/6.9.
+- **NEW:** Architecture spec §7.8 doc amendment — `ON CONFLICT ON CONSTRAINT` → inference-clause form (partial index limitation).
+
+Next part: **6.8 — Notification pause logic verification** (in-place test leveraging fixtures from 5.8 + 6.1/6.4). Series 6 has one more backend part after 6.8, the FE cutover trio (6.2a/6.2b/6.9), then Series 7.
+
+---
+
 ## Series 6 progress (Parts 6.1 → 6.6) — holidays backend (deferring FE cutover) — STATUS: ✅ done
 Date: 2026-05-08
 Operator: Mukul Phogat
