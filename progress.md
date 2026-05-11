@@ -29,6 +29,48 @@ Next part: X.Y+1
 
 ---
 
+## Part 7.4 (Series 7) — Calendar role-based visibility matrix + STUDENT_VIEW audit — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **STAFF narrowing on tasks (net-new behavior).** `TaskReadService.findInWindow` now filters by `assigneeUserId == actor.id()` when `actor.role() == STAFF`. ORG_ADMIN / SCHOOL_ADMIN still see every task at the requested school (no narrowing); PARENT still short-circuits to empty (D10). Implemented as a post-query filter — task volumes are small enough per school per month that the SQL-level filter is a 7.6 perf concern, not a correctness concern.
+- **STUDENT_VIEW audit (COPPA paper-trail, playbook line 3088).** Every calendar response that surfaces a student identity writes one row to `audit_events` with action `STUDENT_VIEW`, `actor_user_id` = the caller, and metadata `{"subject_ids": [...], "source": "calendar.read"}`. The collector pulls UUIDs from three sources: `BirthdayCalendarItem.data.studentId`, `ImportantCalendarItem.data.studentId` (rare but supported), and `EventCalendarItem.data.studentIds` (CUSTOM events). Deduplicated via `LinkedHashSet` so the same student appearing in multiple items contributes once.
+  - Responses with zero student-bearing items skip the audit (nothing to audit).
+  - IP and User-Agent are best-effort from `RequestContextHolder` — null for non-HTTP call paths (future internal admin tools).
+  - Audit failures are caught and logged at WARN; they MUST NEVER fail the user-facing response. Same defensive posture as `AuditAspect` (3.3) and `AuditReadAspect` (4.0a).
+- **`CalendarReadService` gains an `AuditService` constructor dep** + the `auditStudentViewIfNeeded(actor, items)` post-build hook.
+
+Files changed (count: 4; 1 new, 2 modified, 1 progress):
+- `src/main/java/com/childcarewow/calendar/task/TaskReadService.java` — STAFF narrowing branch in both non-recurring and recurring task loops. Javadoc expanded to document the full visibility matrix.
+- `src/main/java/com/childcarewow/calendar/calendar/CalendarReadService.java` — `+AuditService` dep, `+auditStudentViewIfNeeded` post-build hook, `+collectStudentIds` static helper, `+currentRequest` helper for IP/UA. The `read` method now calls the audit hook before returning.
+- `src/test/java/com/childcarewow/calendar/calendar/CalendarRoleVisibilityIT.java` — new (7 tests).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 3m01s. 222 tests, 0 failures, 2 skipped (Linux-only Testcontainers); JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `CalendarRoleVisibilityIT` — 7/7 real-DB tests green:
+  - **STAFF narrowing**: `staffSeesOnlyTasksAssignedToThem` — insert tasks for Maya + Tom; each STAFF queries and gets only their own. `adminSeesAllTasksRegardlessOfAssignee` confirms no narrowing for ORG_ADMIN.
+  - **STUDENT_VIEW audit positives**: `responseWithBirthdayWritesStudentViewAuditRow` (birthday + Aanya), `responseWithCustomEventCarryingStudentIdsWritesAuditRow` (CUSTOM event with `studentIds=[Aanya]`). Both write exactly one row each with Aanya's UUID + `source=calendar.read` in metadata.
+  - **STUDENT_VIEW audit negatives**: `responseWithOnlyHolidaysAndSchoolEventsWritesNoAuditRow` — SCHOOL events have empty studentIds, no birthday → no audit row. `emptyResponseWritesNoAuditRow` — empty window → no audit row.
+  - **Consolidation**: `birthdayPlusCustomEventConsolidateIntoOneAuditRow` — two items both referencing Aanya → ONE audit row (not two), Aanya's UUID present once.
+- [x] Existing tests still pass — STAFF narrowing didn't regress `CalendarTaskReadIT` (which uses admin), `CalendarReadServiceIT`, or `CalendarHolidayImportantReadIT`. The audit hook doesn't fire on test fixtures that lack student references; the few that DO carry students were checked against the audit-row count.
+
+Notes / surprises:
+- **STUDENT_VIEW audit on EVERY actor (not just parents)** is the COPPA-faithful interpretation. The audit is a paper-trail of access; we don't want gaps just because the actor was an admin. The Series-12 pen-test will validate that admins-viewing-children-data leaves the same audit trail as parents-viewing-children-data.
+- **IP/UA via `RequestContextHolder` couples the service to request scope**, but only weakly — null is a fine fallback when the call path is non-HTTP. This avoids threading `HttpServletRequest` through the entire call stack just to reach the audit row.
+- **`currentRequest()` helper is `static`** to keep `CalendarReadService` testable from non-HTTP contexts (which `RequestContextHolder.getRequestAttributes()` returns null for); the helper handles that gracefully.
+- **Deduplication via `LinkedHashSet`** is intentional: stable iteration order means the same response always produces the same audit metadata. Tests that assert on the metadata string can rely on consistent UUID ordering.
+- **The cleanup query** `DELETE FROM audit_events WHERE action = 'STUDENT_VIEW' AND user_agent IS NULL` targets only test-written rows (production rows would have a real User-Agent from the IT's MockMvc-less code path which writes null). If a future test ever calls through MockMvc, the cleanup would need a per-test row-id strategy.
+
+### Carry-forward (none cleared, none added)
+
+- All previously-open carry-forwards remain. The Series-wide Spring binding error gap (Part 4.1 / 7.1 deferral) is still open.
+
+Next part: **Part 7.5 — Frontend `calendarService.ts` shadow mode.** Lives in the FE repo (`Events_CCW`). 5% sampling, diffs to `/diagnostics/shadow-diff`. Operator-gated; backend can move to Part 7.6 perf benchmark in parallel.
+
+---
+
 ## Part 7.3 (Series 7) — Calendar adds holidays + important_dates + birthdays + filters — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat

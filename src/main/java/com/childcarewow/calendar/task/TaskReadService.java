@@ -17,9 +17,18 @@ import org.springframework.transaction.annotation.Transactional;
  * window. Series 8 will introduce the full {@code TaskService} (CRUD); this class is the slim read
  * path that 7.2 needs without pulling in the write surface ahead of schedule.
  *
- * <p><b>D10: parents never see tasks.</b> A PARENT actor short-circuits to an empty list before any
- * DB hit. STAFF visibility is still broad in 7.2 — the per-role narrowing ("STAFF sees only tasks
- * assigned to them") lands in Part 7.4 as part of the unified role-based visibility pass.
+ * <p><b>Visibility (architecture spec §6.2 + D10).</b>
+ *
+ * <ul>
+ *   <li>PARENT: tasks are never visible — short-circuit to empty before any DB hit.
+ *   <li>STAFF: only tasks where {@code assigneeUserId = actor.id()}. Other staff's tasks at the
+ *       same school don't show on a staff member's calendar.
+ *   <li>SCHOOL_ADMIN / ORG_ADMIN: no narrowing; all tasks at the requested school.
+ * </ul>
+ *
+ * <p>STAFF narrowing is applied post-query rather than as a SQL filter. The result sets here are
+ * typically small (a few dozen tasks per school per month); pushing the assignee filter into the
+ * repository is a Part 7.6 perf concern if profiling shows it matters.
  */
 @Service
 public class TaskReadService {
@@ -35,17 +44,25 @@ public class TaskReadService {
   @Transactional(readOnly = true)
   public List<TaskCalendarItem> findInWindow(
       UUID schoolId, LocalDate from, LocalDate to, UserPrincipal actor) {
-    if (actor != null && actor.role() == Role.PARENT) {
+    if (actor == null || actor.role() == Role.PARENT) {
       return List.of();
     }
 
+    boolean staffNarrowing = actor.role() == Role.STAFF;
+    UUID staffId = staffNarrowing ? actor.id() : null;
     List<TaskCalendarItem> items = new ArrayList<>();
 
     for (Task t : taskRepo.findNonRecurringInWindow(schoolId, from, to)) {
+      if (staffNarrowing && !t.getAssigneeUserId().equals(staffId)) {
+        continue;
+      }
       items.add(new TaskCalendarItem(t.getDueDate(), TaskView.fromEntity(t)));
     }
 
     for (Task t : taskRepo.findRecurringForSchool(schoolId)) {
+      if (staffNarrowing && !t.getAssigneeUserId().equals(staffId)) {
+        continue;
+      }
       var expansion = recurrenceService.expand(t, from, to);
       for (LocalDate occDate : expansion.occurrences()) {
         OccurrenceSnapshot snap = recurrenceService.projectFor(t, occDate);
