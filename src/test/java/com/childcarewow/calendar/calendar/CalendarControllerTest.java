@@ -52,7 +52,7 @@ class CalendarControllerTest {
   @Test
   void happyPathReturnsKindEventLowercaseAndDateAndData() throws Exception {
     when(directory.load(any(UUID.class))).thenReturn(actor(OLIVIA, Role.ORG_ADMIN));
-    when(service.read(any(), any(), any(), any())).thenReturn(List.of(sampleEventItem()));
+    when(service.read(any(), any(), any(), any(), any())).thenReturn(List.of(sampleEventItem()));
 
     String token = signer.sign(OLIVIA.toString());
     mvc.perform(
@@ -71,7 +71,7 @@ class CalendarControllerTest {
   @Test
   void emptyWindowReturnsEmptyArray() throws Exception {
     when(directory.load(any(UUID.class))).thenReturn(actor(OLIVIA, Role.ORG_ADMIN));
-    when(service.read(any(), any(), any(), any())).thenReturn(List.of());
+    when(service.read(any(), any(), any(), any(), any())).thenReturn(List.of());
 
     String token = signer.sign(OLIVIA.toString());
     mvc.perform(
@@ -100,7 +100,7 @@ class CalendarControllerTest {
     // The real service is the source of truth on the 366-day cap, but the slice test mocks it.
     // Have the mock throw the same exception the real service raises — this verifies the envelope
     // mapping in GlobalExceptionHandler still emits the right error code and field for this path.
-    when(service.read(any(), any(), any(), any()))
+    when(service.read(any(), any(), any(), any(), any()))
         .thenThrow(new ValidationException("to", "window may not exceed 366 days"));
 
     String token = signer.sign(OLIVIA.toString());

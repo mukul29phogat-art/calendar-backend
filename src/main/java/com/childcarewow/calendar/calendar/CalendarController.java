@@ -36,8 +36,8 @@ public class CalendarController {
       @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate from,
       @RequestParam @DateTimeFormat(iso = DateTimeFormat.ISO.DATE) LocalDate to,
       @RequestParam(required = false) java.util.Set<String> filters) {
-    // `filters` is reserved for Part 7.3 — once we emit more than one kind, this narrows the
-    // response. Until then it's a no-op pass-through; clients can send it without behavior change.
-    return service.read(schoolId, from, to, actor);
+    // Spring auto-parses comma-separated values into the Set. Accepts FE-plural tokens
+    // (events, tasks, holidays, birthdays, important_dates) and the singular kind names too.
+    return service.read(schoolId, from, to, filters, actor);
   }
 }

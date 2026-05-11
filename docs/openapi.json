@@ -1105,7 +1105,7 @@
               "format" : "date"
             },
             "data" : {
-              "type" : "object"
+              "$ref" : "#/components/schemas/ImportantDateView"
             }
           }
         } ]
@@ -1168,10 +1168,41 @@
               "format" : "date"
             },
             "data" : {
-              "type" : "object"
+              "$ref" : "#/components/schemas/ImportantDateView"
             }
           }
         } ]
+      },
+      "ImportantDateView" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "date" : {
+            "type" : "string",
+            "format" : "date"
+          },
+          "label" : {
+            "type" : "string"
+          },
+          "kind" : {
+            "type" : "string",
+            "enum" : [ "BIRTHDAY", "IMPORTANT" ]
+          },
+          "studentId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "visibleToParents" : {
+            "type" : "boolean"
+          }
+        }
       },
       "LocalTime" : {
         "type" : "object",
