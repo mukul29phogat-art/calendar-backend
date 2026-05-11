@@ -29,6 +29,65 @@ Next part: X.Y+1
 
 ---
 
+## Part 8.1 (Series 8) — `POST /api/v1/tasks` — single assignee — STATUS: ✅ done · **OPENS SERIES 8**
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **`task/TaskController`** — `POST /api/v1/tasks` with `@Audited("TASK_CREATE", targetType="TASK")` and the standard auth + policy gate (`policy.assertCan(actor, "task.create")` — `task.create` was wired in Part 3.2 as a non-PARENT action; PARENT → 403). The `/api/v1/tasks` route was already in the idempotency-filter allowlist from Part 3.13, so retries are transparently de-duplicated.
+- **`task/CreateTaskRequest`** — bean-validation record matching the FE prototype's `tasksService.ts:171-227` rules. `title` (NotBlank + ≤120), `schoolId` (NotNull), `assigneeUserIds` (NotEmpty `List<UUID>`), `dueDate` (NotNull `LocalDate`). Status/priority default to TODO/MEDIUM (matches schema defaults from V3 migration) via `statusOrDefault()` / `priorityOrDefault()` helpers. **`assigneeUserIds` is a list from day one** so the wire shape doesn't break when Part 8.2 fan-out lands; 8.1 service-side rejects size > 1 with a clear `ValidationException(field="assigneeUserIds", message="...Part 8.2...")`.
+- **`task/TaskService.create`** — full create flow:
+  1. Validate single-assignee constraint.
+  2. **Holiday block** on `dueDate` via `findApprovedHolidayName(schoolId, dueDate)`. `dueDate` is already a `LocalDate` (school-local), so no `TimezoneService` conversion needed (unlike events, where `startDt` is an instant). Throws `TaskOnHolidayException` (409 with `field="dueDate"`, message includes the holiday name).
+  3. `PlatformEntityValidator.assertSchoolExists` + `assertClassroomExists` + `assertClassroomBelongsToSchool` (if classroom provided) + `assertUserExists(assignee)`. Same pattern as `EventService.create`.
+  4. Build entity → `saveAndFlush + em.refresh` to populate DB-managed `created_at` / `updated_at`.
+  5. `softFlagService.recomputeForTask(saved.getId())` — bidirectional `DOUBLE_BOOKING` pairs for same-assignee same-due-date overlaps (Part 3.12).
+  6. `notificationService.dispatchTaskCreated(saved)` — TASK_ASSIGNED row addressed to the assignee.
+- **`task/TaskService.loadForPolicyCheck`** — preemptive helper for Part 8.4's resource-bearing PUT gate. Not used in 8.1 itself but lands here to mirror `EventService`.
+- **`NotificationService.dispatchTaskCreated`** — new public dispatcher. Writes a TASK_ASSIGNED `notifications` row + one `notification_recipients` row for the assignee. **Single-recipient** (no fan-out — tasks are internal, no parent invitees). Holiday-pause check still wired (`checkTaskPauseReason` looks up the same approved-holiday rule), even though in practice the hard-block above means it never fires on create — but the `writeTaskNotification` helper will be reused by 8.5 (PATCH status), where a retroactive holiday could land. Defensive shape now means fewer surprises later.
+
+Files changed (count: 7; 5 new, 2 modified, 1 progress):
+- `src/main/java/com/childcarewow/calendar/task/CreateTaskRequest.java` — new (bean-validation record).
+- `src/main/java/com/childcarewow/calendar/task/TaskController.java` — new (POST handler).
+- `src/main/java/com/childcarewow/calendar/task/TaskService.java` — new (create flow).
+- `src/main/java/com/childcarewow/calendar/notification/NotificationService.java` — `+dispatchTaskCreated`, `+writeTaskNotification`, `+checkTaskPauseReason`. Added `Task` import.
+- `src/test/java/com/childcarewow/calendar/task/TaskCreateIT.java` — new (7 ITs).
+- `src/test/java/com/childcarewow/calendar/task/TaskControllerTest.java` — new (4 slice tests).
+- `docs/openapi.json` — regenerated baseline including the new POST route + `CreateTaskRequest` schema + `TaskView` already-existed-from-7.2 surfaces on a write endpoint now.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 51s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `TaskCreateIT` — 7/7 real-DB tests green:
+  - **`happyPathCreatesTaskWithAllFieldsPopulated`** — all 9 request fields round-trip into TaskView; `createdAt` populated by `em.refresh`.
+  - **`statusAndPriorityDefaultWhenOmitted`** — null status/priority → TODO/MEDIUM defaults.
+  - **`multiAssigneeRejectedUntilPart8_2`** — size=2 → `ValidationException` with message containing "Part 8.2".
+  - **`holidayOnDueDateBlocksCreation`** — pre-create holiday at (Sunrise, 2026-12-25); task create on same date → `TaskOnHolidayException` carrying the holiday name; zero task rows inserted.
+  - **`classroomInDifferentSchoolRejected`** — Sunrise schoolId + Sunbeams classroomId (Maplewood) → `ValidationException` (from `PlatformEntityValidator.assertClassroomBelongsToSchool`).
+  - **`unknownAssigneeRejected`** — random UUID assignee → `ValidationException`.
+  - **`notificationRowAndRecipientWrittenForAssignee`** — task created → one TASK_ASSIGNED notification row + one recipient row for the assignee (Maya).
+- [x] `TaskControllerTest` — 4/4 slice tests green:
+  - **`adminCanCreateTask`** — admin token + valid body → 201, response shape matches TaskView.
+  - **`parentGets403`** — PARENT actor → 403 `FORBIDDEN` envelope; service.create never invoked.
+  - **`unauthenticatedGets401`** — no Authorization header → 401.
+  - **`invalidBodyReturns400Envelope`** — empty body → 400 `VALIDATION_ERROR`.
+- [x] OpenAPI snapshot regenerated to include the new route + `CreateTaskRequest` schema.
+
+Notes / surprises:
+- **`TaskView` already existed from Part 7.2** — defined with two factories (`fromEntity` for direct projection, `fromOccurrence` for recurring expansions). Part 8.1 reuses `fromEntity` as-is. When 8.5 (PATCH status) lands, the view shape may need a small extension for an overdue derived flag.
+- **Holiday-block path on tasks is structurally identical to events** (Part 5.7) but lives in the task service. The two `findApprovedHolidayName` helpers are byte-for-byte equivalent except for the throw type. Could be lifted to a shared utility once a third caller appears (probably 9.x important_dates).
+- **Single-recipient task notifications** don't reuse the `writeWithRecipients` event helper because the event helper's signature is `(Event, ...)` and the recipient resolution is event-specific. Parallel-but-separate path is fine; if the two diverge less than expected, lifting a generic `writeNotification(orgId, schoolId, kind, message, recipients, pausedReason, entityId, entityTitle)` is a small refactor at Series 12 polish time.
+- **OpenAPI snapshot regeneration was required** because the new POST route + request schema are new. The `CALENDAR_PERF` perf-IT class doesn't surface in the spec (it's not a controller); good — keeps the snapshot to actual API surfaces.
+- **Default test count climbed**: 222 → 233 (added 4 slice + 7 IT). 3 still skipped (2 Linux-only Testcontainers + 1 `CALENDAR_PERF` gated IT).
+
+### Carry-forward (none cleared, none added)
+
+- All previously-open carry-forwards remain. No new entries.
+
+Next part: **Part 8.2 — `POST /api/v1/tasks` multi-assignee fan-out.** Wire shape stays the same (the request already accepts `List<UUID> assigneeUserIds`); service-side creates N rows (one per assignee), all sharing a `parent_task_group_id` (UUID generated at request time) so 8.x can later operate on the group atomically. The per-task notification dispatch runs once per row. Tests should cover: N=1 (existing happy path), N=3 (three rows + three notifications + shared group_id), the holiday block applies once and rejects the whole batch, partial-write recovery if any platform-validator assertion fails mid-batch (transaction rollback).
+
+---
+
 ## Part 7.6 (Series 7) — Calendar perf benchmark + cutover — STATUS: ✅ done (scaled-down; full load test deferred to Series 11)
 Date: 2026-05-11
 Operator: Mukul Phogat
