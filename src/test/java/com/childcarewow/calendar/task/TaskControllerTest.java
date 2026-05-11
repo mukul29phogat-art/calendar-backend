@@ -53,22 +53,23 @@ class TaskControllerTest {
     when(directory.load(any(UUID.class))).thenReturn(actor(OLIVIA, Role.ORG_ADMIN));
     when(service.create(any(), any()))
         .thenReturn(
-            new TaskView(
-                UUID.randomUUID(),
-                SUNRISE,
-                UUID.fromString("11111111-1111-1111-1111-111111111111"),
-                BUTTERFLIES,
-                "Storytime prep",
-                null,
-                MAYA,
-                LocalDate.of(2026, 9, 15),
-                null,
-                TaskStatus.TODO,
-                TaskPriority.MEDIUM,
-                null,
-                null,
-                OffsetDateTime.now(),
-                OffsetDateTime.now()));
+            java.util.List.of(
+                new TaskView(
+                    UUID.randomUUID(),
+                    SUNRISE,
+                    UUID.fromString("11111111-1111-1111-1111-111111111111"),
+                    BUTTERFLIES,
+                    "Storytime prep",
+                    null,
+                    MAYA,
+                    LocalDate.of(2026, 9, 15),
+                    null,
+                    TaskStatus.TODO,
+                    TaskPriority.MEDIUM,
+                    null,
+                    null,
+                    OffsetDateTime.now(),
+                    OffsetDateTime.now())));
 
     String token = signer.sign(OLIVIA.toString());
     mvc.perform(
@@ -77,9 +78,9 @@ class TaskControllerTest {
                 .contentType("application/json")
                 .content(validBody()))
         .andExpect(status().isCreated())
-        .andExpect(jsonPath("$.title").value("Storytime prep"))
-        .andExpect(jsonPath("$.status").value("TODO"))
-        .andExpect(jsonPath("$.assigneeUserId").value(MAYA.toString()));
+        .andExpect(jsonPath("$[0].title").value("Storytime prep"))
+        .andExpect(jsonPath("$[0].status").value("TODO"))
+        .andExpect(jsonPath("$[0].assigneeUserId").value(MAYA.toString()));
   }
 
   @Test

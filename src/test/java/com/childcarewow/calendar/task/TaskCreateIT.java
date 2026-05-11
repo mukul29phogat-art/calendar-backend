@@ -22,9 +22,10 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
- * Real-DB IT for {@link TaskService#create}. Exercises the full Part 8.1 create flow: validation,
- * holiday block on dueDate, platform-entity assertions, soft-flag recompute, notification dispatch
- * (TASK_ASSIGNED). Multi-assignee fan-out is intentionally NOT here — that's Part 8.2.
+ * Real-DB IT for {@link TaskService#create}. Exercises both 8.1 single-assignee and 8.2
+ * multi-assignee fan-out: validation, holiday block on dueDate, platform-entity assertions, per-row
+ * soft-flag recompute + notification dispatch, shared {@code parent_task_group_id} on fan-outs,
+ * transactional rollback on mid-batch failures.
  */
 @SpringBootTest
 class TaskCreateIT {
@@ -34,6 +35,7 @@ class TaskCreateIT {
   private static final UUID BUTTERFLIES = UUID.fromString("44444444-0000-0000-0000-000000000001");
   private static final UUID CATERPILLARS = UUID.fromString("44444444-0000-0000-0000-000000000002");
   private static final UUID OLIVIA = UUID.fromString("33333333-0000-0000-0000-000000000001");
+  private static final UUID RAVI = UUID.fromString("33333333-0000-0000-0000-000000000002");
   private static final UUID MAYA = UUID.fromString("33333333-0000-0000-0000-000000000004");
   private static final UUID TOM = UUID.fromString("33333333-0000-0000-0000-000000000005");
 
@@ -57,8 +59,10 @@ class TaskCreateIT {
     calendarJdbc.update("DELETE FROM holidays WHERE name LIKE 'IT-tc-%'");
   }
 
+  // -- single-assignee (Part 8.1) -------------------------------------------
+
   @Test
-  void happyPathCreatesTaskWithAllFieldsPopulated() {
+  void singleAssigneeHappyPathCreatesOneTaskWithAllFieldsPopulated() {
     LocalDate due = LocalDate.of(2026, 9, 15);
     CreateTaskRequest req =
         new CreateTaskRequest(
@@ -72,8 +76,10 @@ class TaskCreateIT {
             TaskStatus.TODO,
             TaskPriority.HIGH);
 
-    TaskView v = taskService.create(req, admin());
+    List<TaskView> result = taskService.create(req, admin());
 
+    assertThat(result).hasSize(1);
+    TaskView v = result.get(0);
     assertThat(v.id()).isNotNull();
     assertThat(v.title()).isEqualTo("IT-tc-grade-papers");
     assertThat(v.description()).isEqualTo("weekly grading");
@@ -85,6 +91,8 @@ class TaskCreateIT {
     assertThat(v.status()).isEqualTo(TaskStatus.TODO);
     assertThat(v.priority()).isEqualTo(TaskPriority.HIGH);
     assertThat(v.createdAt()).isNotNull();
+    // Single-assignee task leaves parentTaskGroupId null per the schema convention.
+    assertThat(v.parentTaskGroupId()).isNull();
   }
 
   @Test
@@ -101,56 +109,36 @@ class TaskCreateIT {
             null,
             null);
 
-    TaskView v = taskService.create(req, admin());
+    List<TaskView> result = taskService.create(req, admin());
+    TaskView v = result.get(0);
 
     assertThat(v.status()).isEqualTo(TaskStatus.TODO);
     assertThat(v.priority()).isEqualTo(TaskPriority.MEDIUM);
   }
 
   @Test
-  void multiAssigneeRejectedUntilPart8_2() {
-    CreateTaskRequest req =
-        new CreateTaskRequest(
-            "IT-tc-multi-assignee",
-            null,
-            SUNRISE,
-            null,
-            List.of(MAYA, TOM),
-            LocalDate.of(2026, 9, 17),
-            null,
-            null,
-            null);
-
-    assertThatThrownBy(() -> taskService.create(req, admin()))
-        .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("Part 8.2");
-  }
-
-  @Test
-  void holidayOnDueDateBlocksCreation() {
+  void holidayOnDueDateBlocksCreationForWholeBatch() {
     LocalDate date = LocalDate.of(2026, 12, 25);
     holidayService.create(
         new CreateHolidayRequest(SUNRISE, date, "IT-tc-Christmas", null), admin());
 
+    // Multi-assignee request — every row must reject atomically.
     CreateTaskRequest req =
         new CreateTaskRequest(
-            "IT-tc-blocked", null, SUNRISE, null, List.of(MAYA), date, null, null, null);
+            "IT-tc-blocked-batch", null, SUNRISE, null, List.of(MAYA, TOM), date, null, null, null);
 
     assertThatThrownBy(() -> taskService.create(req, admin()))
         .isInstanceOf(TaskOnHolidayException.class)
         .hasMessageContaining("IT-tc-Christmas");
 
-    // No task row was inserted.
     Integer count =
         calendarJdbc.queryForObject(
-            "SELECT COUNT(*) FROM tasks WHERE title = ?", Integer.class, "IT-tc-blocked");
+            "SELECT COUNT(*) FROM tasks WHERE title = ?", Integer.class, "IT-tc-blocked-batch");
     assertThat(count).isZero();
   }
 
   @Test
   void classroomInDifferentSchoolRejected() {
-    // CATERPILLARS is at Sunrise per seed. Let me actually use a Maplewood classroom to force a
-    // school-mismatch — Sunbeams (Maplewood) and BUTTERFLIES (Sunrise).
     UUID sunbeams = UUID.fromString("44444444-0000-0000-0000-000000000003");
     CreateTaskRequest req =
         new CreateTaskRequest(
@@ -200,7 +188,7 @@ class TaskCreateIT {
             null,
             null);
 
-    TaskView v = taskService.create(req, admin());
+    TaskView v = taskService.create(req, admin()).get(0);
 
     Integer notifCount =
         calendarJdbc.queryForObject(
@@ -217,6 +205,117 @@ class TaskCreateIT {
             UUID.class,
             v.id());
     assertThat(recipient).isEqualTo(MAYA);
+  }
+
+  // -- multi-assignee fan-out (Part 8.2) ------------------------------------
+
+  @Test
+  void multiAssigneeFanOutCreatesOneRowPerAssigneeWithSharedGroupId() {
+    CreateTaskRequest req =
+        new CreateTaskRequest(
+            "IT-tc-fanout-3way",
+            "synced standup",
+            SUNRISE,
+            null,
+            List.of(MAYA, TOM, RAVI),
+            LocalDate.of(2026, 9, 22),
+            null,
+            null,
+            null);
+
+    List<TaskView> result = taskService.create(req, admin());
+
+    assertThat(result).hasSize(3);
+    // Distinct task ids.
+    assertThat(result.stream().map(TaskView::id).distinct()).hasSize(3);
+    // All assignees represented exactly once.
+    assertThat(result.stream().map(TaskView::assigneeUserId).toList())
+        .containsExactlyInAnyOrder(MAYA, TOM, RAVI);
+    // All rows share the same parent_task_group_id.
+    Set<UUID> groupIds = new java.util.HashSet<>();
+    result.forEach(v -> groupIds.add(v.parentTaskGroupId()));
+    assertThat(groupIds).hasSize(1);
+    assertThat(groupIds.iterator().next()).isNotNull();
+  }
+
+  @Test
+  void multiAssigneeFanOutDispatchesOneTaskAssignedNotificationPerAssignee() {
+    CreateTaskRequest req =
+        new CreateTaskRequest(
+            "IT-tc-fanout-notify",
+            null,
+            SUNRISE,
+            null,
+            List.of(MAYA, TOM),
+            LocalDate.of(2026, 9, 23),
+            null,
+            null,
+            null);
+
+    List<TaskView> result = taskService.create(req, admin());
+
+    Integer notifCount =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM notifications WHERE related_entity_title = ? AND kind = 'TASK_ASSIGNED'",
+            Integer.class,
+            "IT-tc-fanout-notify");
+    assertThat(notifCount).isEqualTo(2);
+
+    // Each notification has exactly one recipient — the corresponding assignee.
+    Integer recipientCount =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM notification_recipients nr "
+                + "JOIN notifications n ON n.id = nr.notification_id "
+                + "WHERE n.related_entity_title = ?",
+            Integer.class,
+            "IT-tc-fanout-notify");
+    assertThat(recipientCount).isEqualTo(2);
+    assertThat(result).hasSize(2);
+  }
+
+  @Test
+  void duplicateAssigneeIdsInOneRequestRejected() {
+    CreateTaskRequest req =
+        new CreateTaskRequest(
+            "IT-tc-dup-assignee",
+            null,
+            SUNRISE,
+            null,
+            List.of(MAYA, MAYA),
+            LocalDate.of(2026, 9, 24),
+            null,
+            null,
+            null);
+
+    assertThatThrownBy(() -> taskService.create(req, admin()))
+        .isInstanceOf(ValidationException.class)
+        .hasMessageContaining("duplicate");
+  }
+
+  @Test
+  void midBatchUnknownAssigneeRollsBackEntireFanOut() {
+    // First assignee (Maya) is valid, second is bogus. The pre-validation loop should reject
+    // before any INSERT happens, so zero task rows are written.
+    UUID bogus = UUID.fromString("99999999-0000-0000-0000-000000000099");
+    CreateTaskRequest req =
+        new CreateTaskRequest(
+            "IT-tc-rollback",
+            null,
+            SUNRISE,
+            null,
+            List.of(MAYA, bogus),
+            LocalDate.of(2026, 9, 25),
+            null,
+            null,
+            null);
+
+    assertThatThrownBy(() -> taskService.create(req, admin()))
+        .isInstanceOf(ValidationException.class);
+
+    Integer count =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM tasks WHERE title = ?", Integer.class, "IT-tc-rollback");
+    assertThat(count).isZero();
   }
 
   private static UserPrincipal admin() {
