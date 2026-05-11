@@ -4,11 +4,13 @@ import com.childcarewow.calendar.auth.UserPrincipal;
 import com.childcarewow.calendar.event.EventService;
 import com.childcarewow.calendar.event.EventView;
 import com.childcarewow.calendar.exception.ValidationException;
+import com.childcarewow.calendar.task.TaskReadService;
 import com.childcarewow.calendar.timezone.TimezoneService;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -39,10 +41,13 @@ public class CalendarReadService {
   private static final long MAX_WINDOW_DAYS = 366;
 
   private final EventService eventService;
+  private final TaskReadService taskReadService;
   private final TimezoneService timezoneService;
 
-  public CalendarReadService(EventService eventService, TimezoneService timezoneService) {
+  public CalendarReadService(
+      EventService eventService, TaskReadService taskReadService, TimezoneService timezoneService) {
     this.eventService = eventService;
+    this.taskReadService = taskReadService;
     this.timezoneService = timezoneService;
   }
 
@@ -68,9 +73,12 @@ public class CalendarReadService {
     OffsetDateTime toOdt = to.plusDays(1).atStartOfDay().minusNanos(1).atOffset(ZoneOffset.UTC);
 
     List<EventView> events = eventService.findInWindow(schoolId, fromOdt, toOdt, null, actor);
-    return events.stream()
-        .map(e -> (CalendarItem) new EventCalendarItem(schoolLocalDateOf(e), e))
-        .toList();
+    List<CalendarItem> items = new ArrayList<>(events.size());
+    for (EventView e : events) {
+      items.add(new EventCalendarItem(schoolLocalDateOf(e), e));
+    }
+    items.addAll(taskReadService.findInWindow(schoolId, from, to, actor));
+    return items;
   }
 
   /** School-local date for the event's {@code startDt} instant. */

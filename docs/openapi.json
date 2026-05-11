@@ -1173,6 +1173,27 @@
           }
         } ]
       },
+      "LocalTime" : {
+        "type" : "object",
+        "properties" : {
+          "hour" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "minute" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "second" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "nano" : {
+            "type" : "integer",
+            "format" : "int32"
+          }
+        }
+      },
       "TaskCalendarItem" : {
         "type" : "object",
         "allOf" : [ {
@@ -1185,10 +1206,72 @@
               "format" : "date"
             },
             "data" : {
-              "type" : "object"
+              "$ref" : "#/components/schemas/TaskView"
             }
           }
         } ]
+      },
+      "TaskView" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "orgId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "classroomId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "title" : {
+            "type" : "string"
+          },
+          "description" : {
+            "type" : "string"
+          },
+          "assigneeUserId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "dueDate" : {
+            "type" : "string",
+            "format" : "date"
+          },
+          "dueTime" : {
+            "$ref" : "#/components/schemas/LocalTime"
+          },
+          "status" : {
+            "type" : "string",
+            "enum" : [ "TODO", "IN_PROGRESS", "DONE" ]
+          },
+          "priority" : {
+            "type" : "string",
+            "enum" : [ "LOW", "MEDIUM", "HIGH" ]
+          },
+          "recurrenceId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "parentTaskGroupId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "createdAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "updatedAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          }
+        }
       },
       "MeView" : {
         "type" : "object",
