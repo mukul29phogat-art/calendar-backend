@@ -1,5 +1,6 @@
 package com.childcarewow.calendar.calendar;
 
+import com.childcarewow.calendar.audit.AuditService;
 import com.childcarewow.calendar.auth.UserPrincipal;
 import com.childcarewow.calendar.event.EventService;
 import com.childcarewow.calendar.event.EventView;
@@ -9,18 +10,24 @@ import com.childcarewow.calendar.holiday.HolidayView;
 import com.childcarewow.calendar.importantdate.ImportantDateReadService;
 import com.childcarewow.calendar.task.TaskReadService;
 import com.childcarewow.calendar.timezone.TimezoneService;
+import jakarta.servlet.http.HttpServletRequest;
 import java.time.LocalDate;
 import java.time.OffsetDateTime;
 import java.time.ZoneOffset;
 import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.context.request.RequestContextHolder;
+import org.springframework.web.context.request.ServletRequestAttributes;
 
 /**
  * Backs {@link CalendarController}'s {@code GET /api/v1/calendar}. Parts 7.1 (events), 7.2 (tasks
@@ -66,23 +73,28 @@ public class CalendarReadService {
           "important_dates", "important",
           "important", "important");
 
+  private static final Logger log = LoggerFactory.getLogger(CalendarReadService.class);
+
   private final EventService eventService;
   private final TaskReadService taskReadService;
   private final HolidayRepository holidayRepo;
   private final ImportantDateReadService importantDateReadService;
   private final TimezoneService timezoneService;
+  private final AuditService auditService;
 
   public CalendarReadService(
       EventService eventService,
       TaskReadService taskReadService,
       HolidayRepository holidayRepo,
       ImportantDateReadService importantDateReadService,
-      TimezoneService timezoneService) {
+      TimezoneService timezoneService,
+      AuditService auditService) {
     this.eventService = eventService;
     this.taskReadService = taskReadService;
     this.holidayRepo = holidayRepo;
     this.importantDateReadService = importantDateReadService;
     this.timezoneService = timezoneService;
+    this.auditService = auditService;
   }
 
   /** Convenience overload: no {@code filters} param means "all kinds". */
@@ -146,7 +158,66 @@ public class CalendarReadService {
       }
     }
 
+    auditStudentViewIfNeeded(actor, items);
+
     return items;
+  }
+
+  /**
+   * COPPA paper-trail (architecture spec § 5.x, playbook line 3088). Every calendar response that
+   * surfaces a student identity — a {@code BirthdayCalendarItem}'s student, an {@code
+   * ImportantCalendarItem} attached to a student, or a CUSTOM event's {@code studentIds} — writes
+   * one {@code STUDENT_VIEW} audit row with the consolidated subject UUIDs in the metadata.
+   * Responses with zero student-bearing items skip the audit (nothing to audit).
+   *
+   * <p>The write runs in a {@code REQUIRES_NEW} transaction inside {@link AuditService#log}, so a
+   * failure here cannot roll back the user-facing response. We catch and log anything that escapes,
+   * the same defense the audit aspect uses in Part 3.3 / 4.0a.
+   */
+  private void auditStudentViewIfNeeded(UserPrincipal actor, List<CalendarItem> items) {
+    if (actor == null) {
+      return;
+    }
+    Set<UUID> subjects = collectStudentIds(items);
+    if (subjects.isEmpty()) {
+      return;
+    }
+    try {
+      HttpServletRequest req = currentRequest();
+      String ip = req == null ? null : req.getRemoteAddr();
+      String ua = req == null ? null : req.getHeader("User-Agent");
+      auditService.log(
+          actor.id(),
+          "STUDENT_VIEW",
+          null,
+          null,
+          ip,
+          ua,
+          Map.of("subject_ids", List.copyOf(subjects), "source", "calendar.read"));
+    } catch (RuntimeException ex) {
+      // Audit must never fail the user-facing response. Same posture as AuditReadAspect (Part
+      // 4.0a) and AuditAspect (Part 3.3).
+      log.warn("STUDENT_VIEW audit write failed: {}", ex.getMessage());
+    }
+  }
+
+  private static Set<UUID> collectStudentIds(List<CalendarItem> items) {
+    Set<UUID> ids = new LinkedHashSet<>();
+    for (CalendarItem item : items) {
+      if (item instanceof BirthdayCalendarItem b && b.data().studentId() != null) {
+        ids.add(b.data().studentId());
+      } else if (item instanceof ImportantCalendarItem i && i.data().studentId() != null) {
+        ids.add(i.data().studentId());
+      } else if (item instanceof EventCalendarItem e && e.data().studentIds() != null) {
+        ids.addAll(e.data().studentIds());
+      }
+    }
+    return ids;
+  }
+
+  private static HttpServletRequest currentRequest() {
+    var attrs = RequestContextHolder.getRequestAttributes();
+    return attrs instanceof ServletRequestAttributes sra ? sra.getRequest() : null;
   }
 
   private LocalDate schoolLocalDateOf(EventView e) {
