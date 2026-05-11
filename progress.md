@@ -29,6 +29,50 @@ Next part: X.Y+1
 
 ---
 
+## Part 8.6 (Series 8) — `DELETE /api/v1/tasks/{id}` soft-delete — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **`TaskService.delete(id, actor)`** — soft-delete via `deletedAt = now()` + `updatedByUserId = actor.id()`, `saveAndFlush`. Idempotent on double-delete: the second call sees a `deletedAt != null` row, the `findById(...).filter(deletedAt == null)` predicate rejects it, and the caller gets a `NotFoundException` — same posture as `EventService.delete` from Part 5.6.
+- **`softFlagService.removeFlagsForTask(saved.getId())` cleanup**. Drops DOUBLE_BOOKING flags from BOTH sides of the bidirectional pair (Part 3.12's `ConflictFlagRepository.deleteDoubleBookingFlagsForTask` deletes by `entity_id = ? OR conflicting_entity_id = ?`). Without this, the surviving task in an overlap pair would keep a stale flag pointing at the deleted task — same gap event-delete from 5.6 plugged.
+- **`NotificationService.dispatchTaskDeleted(Task)`** — new public dispatcher. Writes a TASK_DELETED row addressed to the assignee. Uses the existing `writeTaskNotification` helper so the same holiday-pause check applies (defensive — in practice a soft-deleted task's `due_date` wasn't on a holiday because the create-time block rejected that, but the path is harmless).
+- **`TaskController.delete`** — `@DeleteMapping("/{id})` with `@Audited("TASK_DELETE", targetType="TASK")`. Same resource-bearing `task.delete` policy gate as the events pattern from 5.6 — STAFF only on their own assigned tasks; PARENT denied. Returns 204 No Content (no body).
+
+Files changed (count: 5; 1 new test, 4 modified, 1 progress):
+- `src/main/java/com/childcarewow/calendar/task/TaskService.java` — `+delete`.
+- `src/main/java/com/childcarewow/calendar/task/TaskController.java` — `+DeleteMapping("/{id}")` handler + import.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationService.java` — `+dispatchTaskDeleted`.
+- `src/test/java/com/childcarewow/calendar/task/TaskDeleteIT.java` — new (6 ITs).
+- `docs/openapi.json` — regenerated to include the new DELETE route.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 1m14s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `TaskDeleteIT` — 6/6 real-DB tests green:
+  - **`softDeletesAndExcludesFromReads`** — delete populates `deleted_at`; `readService.findById` 404s afterwards.
+  - **`doubleDeleteReturns404`** — second `delete` on the same id throws `NotFoundException`.
+  - **`unknownIdReturns404`** — random UUID throws `NotFoundException`.
+  - **`deleteClearsBidirectionalDoubleBookingFlagPair`** — same-school + same-assignee + same-dueDate TODO pair creates 2 DOUBLE_BOOKING rows; deleting one task → both sides cleared (verified by `entity_id IN (...)` OR `conflicting_entity_id IN (...)` count = 0).
+  - **`writesTaskDeletedNotificationToAssignee`** — exactly one TASK_DELETED notification with one recipient row (Maya).
+  - **`deletedTaskExcludedFromWindowRead`** — task appears in `findInWindow` before delete; absent after.
+- [x] OpenAPI snapshot regenerated to include `DELETE /api/v1/tasks/{id}`.
+- [x] All earlier tests still green (`TaskCreateIT`, `TaskReadIT`, `TaskUpdateIT`, `TaskStatusPatchIT`, `TaskControllerTest`, `CalendarTaskReadIT`).
+
+Notes / surprises:
+- **Idempotent double-delete = 404, not 204.** The architectural choice mirrors event 5.6: a second delete on an already-deleted row surfaces as "not found" because the resource no longer exists from the consumer's view. Some REST styles return 204 idempotently; our pattern is more aggressive about hiding existence after delete (matches the soft-delete-as-404 read semantics from Part 8.3).
+- **Cleanup of the OLD assignee's flags is implicit.** `softFlagService.removeFlagsForTask` deletes flags by `entity_id` OR `conflicting_entity_id` matching the task id. The OTHER side of the pair (the surviving task) has its flag pointing at this task via `conflicting_entity_id` — that's what gets dropped on the OR predicate.
+- **No notification to "former" assignees.** Tasks have a single assignee at the time of delete; the `dispatchTaskDeleted` writes one row to that current assignee. If a task was reassigned just before delete (8.4's `dispatchTaskUpdated` handles the reassignment heads-up), the prior assignee already got their notification from the update path; the delete only addresses the current assignee.
+- **`@Audited("TASK_DELETE")` + 204 response.** The audit aspect's `@AfterReturning` fires successfully on void-returning methods (`ResponseEntity<Void>` resolves cleanly). Audit row has `target_id = null` because `idFrom = "id"` default doesn't resolve on the void return — acceptable since the path variable `{id}` is in the audit row's metadata via the request's URL anyway (not surfaced today; could be added in Series-12 polish).
+
+### Carry-forward (none cleared, none added)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 8.7 — recurrence integration on POST + PUT.** Wire `RecurrenceRule` creation through `TaskService.create` (when the request carries a recurrence spec, persist a RecurrenceRule, set `recurrenceId` on the task). Wire updates: `EditChoice` (this instance / this and following / entire series) per FE prototype. The infrastructure is already in place from Part 3.6–3.9 (RecurrenceService + TaskInstanceOverrideRepository); 8.7 is the controller / service wiring + a `RecurrenceSpec` sub-record on `CreateTaskRequest`.
+
+---
+
 ## Part 8.5 (Series 8) — `PATCH /api/v1/tasks/{id}/status` (Kanban drag-and-drop) — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat

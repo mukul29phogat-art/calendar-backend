@@ -11,6 +11,7 @@ import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -120,5 +121,19 @@ public class TaskController {
     Task existing = service.loadForPolicyCheck(id);
     policy.assertCan(actor, "task.edit", existing);
     return service.updateStatus(id, req.status(), actor);
+  }
+
+  /**
+   * Soft-deletes the task. Resource-bearing {@code task.delete} policy fires Part 3.2's STAFF
+   * type-specific scoping (STAFF only on their own assigned tasks). Returns 204 No Content.
+   */
+  @DeleteMapping("/{id}")
+  @Audited(action = "TASK_DELETE", targetType = "TASK")
+  public ResponseEntity<Void> delete(
+      @AuthenticationPrincipal UserPrincipal actor, @PathVariable UUID id) {
+    Task existing = service.loadForPolicyCheck(id);
+    policy.assertCan(actor, "task.delete", existing);
+    service.delete(id, actor);
+    return ResponseEntity.noContent().build();
   }
 }

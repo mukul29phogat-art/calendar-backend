@@ -138,6 +138,19 @@ public class NotificationService {
   }
 
   /**
+   * Writes a TASK_DELETED row addressed to the (about-to-be-deleted) task's assignee. Mirrors
+   * {@code dispatchEventDeleted} — the row is written AFTER the soft-delete commit so the recipient
+   * resolution sees the canonical task state. No-op if the task has no assignee.
+   */
+  @Transactional
+  public void dispatchTaskDeleted(Task task) {
+    if (task == null) {
+      return;
+    }
+    writeTaskNotification(task, NotificationKind.TASK_DELETED, "Deleted: " + task.getTitle());
+  }
+
+  /**
    * Diff-driven dispatcher for task updates.
    *
    * <ul>

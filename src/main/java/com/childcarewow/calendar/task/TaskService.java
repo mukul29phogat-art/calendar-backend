@@ -247,6 +247,38 @@ public class TaskService {
     return TaskView.fromEntity(saved);
   }
 
+  /**
+   * Soft-deletes the task. Idempotent on second delete — a row that's already been soft-deleted
+   * surfaces as 404 on the next call (matches the read-path behavior from Part 8.3's {@code
+   * findById}).
+   *
+   * <p><b>Soft-flag cleanup is bidirectional.</b> {@link SoftFlagService#removeFlagsForTask} drops
+   * DOUBLE_BOOKING flags pointing at this task AND any flags this task was conflicting with.
+   * Without that, the surviving task in an overlap pair would keep a stale flag pointing at the
+   * deleted task — same posture as event delete from Part 5.6.
+   *
+   * <p><b>Notification dispatch.</b> {@code dispatchTaskDeleted} writes a TASK_DELETED row
+   * addressed to the assignee (a single-recipient kind — tasks are internal). The pause check still
+   * applies via the shared {@code writeTaskNotification} helper, even though a hard-blocked dueDate
+   * on a holiday shouldn't make it to a delete in practice.
+   */
+  @Transactional
+  public void delete(UUID id, UserPrincipal actor) {
+    Task existing =
+        taskRepo
+            .findById(id)
+            .filter(x -> x.getDeletedAt() == null)
+            .orElseThrow(
+                () -> new com.childcarewow.calendar.exception.NotFoundException("Task", id));
+
+    existing.setDeletedAt(java.time.OffsetDateTime.now());
+    existing.setUpdatedByUserId(actor.id());
+    Task saved = taskRepo.saveAndFlush(existing);
+
+    softFlagService.removeFlagsForTask(saved.getId());
+    notificationService.dispatchTaskDeleted(saved);
+  }
+
   /** Detached snapshot of fields the post-update notification diff inspects. */
   private static Task snapshotForDiff(Task t) {
     Task s = new Task();
