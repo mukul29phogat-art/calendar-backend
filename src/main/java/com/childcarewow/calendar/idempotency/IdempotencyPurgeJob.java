@@ -2,6 +2,7 @@ package com.childcarewow.calendar.idempotency;
 
 import com.childcarewow.calendar.crosscut.IdempotencyKeyRepository;
 import java.time.OffsetDateTime;
+import net.javacrumbs.shedlock.spring.annotation.SchedulerLock;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
@@ -10,10 +11,10 @@ import org.springframework.stereotype.Component;
 /**
  * Daily purge of expired idempotency rows. Runs at 04:00 UTC.
  *
- * <p><b>ShedLock deferred.</b> The architecture spec calls for ShedLock-backed coordination so only
- * one ECS instance purges per day. We're single-instance during dev (LocalStack); ShedLock lands in
- * Series 11.4 alongside the actual ECS deployment, when there's a real second instance to
- * coordinate with. Until then, the cron runs once on whichever instance is up.
+ * <p>Coordinated across multi-instance ECS via ShedLock (wired in Part 6.7). The {@code
+ * IDEMPOTENCY_PURGE} lock binds to the calendar-DB {@code shedlock} table; a single tick fires on
+ * one instance only. {@code lockAtMostFor=PT5M} is several orders of magnitude above the typical
+ * sub-second purge duration — bounded so a crashed instance can't permanently hold the lock.
  */
 @Component
 public class IdempotencyPurgeJob {
@@ -27,6 +28,7 @@ public class IdempotencyPurgeJob {
   }
 
   @Scheduled(cron = "0 0 4 * * *", zone = "UTC")
+  @SchedulerLock(name = "IDEMPOTENCY_PURGE", lockAtMostFor = "PT5M")
   public void purge() {
     purgeUsingClock(OffsetDateTime.now());
   }

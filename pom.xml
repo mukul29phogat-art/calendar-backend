@@ -81,6 +81,22 @@
             <artifactId>flyway-database-postgresql</artifactId>
             <version>10.20.1</version>
         </dependency>
+        <!--
+            ShedLock — coordinates @Scheduled jobs across multi-instance ECS so a job fires
+            once per scheduled tick, not N times. Wired in Part 6.7 for both
+            FederalHolidaySyncJob and IdempotencyPurgeJob (closing the carry-forward from
+            Series 3). Lock backend: calendar DB shedlock table (V9 migration).
+        -->
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-spring</artifactId>
+            <version>5.16.0</version>
+        </dependency>
+        <dependency>
+            <groupId>net.javacrumbs.shedlock</groupId>
+            <artifactId>shedlock-provider-jdbc-template</artifactId>
+            <version>5.16.0</version>
+        </dependency>
         <dependency>
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-test</artifactId>
