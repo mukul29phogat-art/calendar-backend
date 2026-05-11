@@ -130,6 +130,34 @@ class TaskUpdateIT {
   }
 
   @Test
+  void retroactiveHolidayOnTaskDateDoesNotBlockSameDatePut() {
+    // The playbook's "retroactive holiday" scenario (Part 8.7 step 2.3): task created on a non-
+    // holiday date; later a holiday is added at that exact date. A subsequent PUT that doesn't
+    // change dueDate must NOT re-check the holiday table — the dateMoved gate keeps the existing
+    // task editable even when its date is now flagged.
+    LocalDate date = LocalDate.of(2027, 1, 5);
+    UUID id = createTaskAndGetId("IT-tu-retroactive", date, MAYA, TaskStatus.TODO);
+    holidayService.create(
+        new CreateHolidayRequest(SUNRISE, date, "IT-tu-Retroactive-Holiday", null), admin());
+
+    // Title-only edit; dueDate stays the same → must succeed despite a holiday now living at that
+    // date.
+    TaskView updated =
+        taskService.update(
+            id,
+            requestFor(
+                "IT-tu-retroactive-renamed",
+                "edit after holiday landed",
+                MAYA,
+                date,
+                TaskStatus.TODO,
+                TaskPriority.MEDIUM),
+            admin());
+    assertThat(updated.title()).isEqualTo("IT-tu-retroactive-renamed");
+    assertThat(updated.dueDate()).isEqualTo(date);
+  }
+
+  @Test
   void sameDateEditDoesNotRecheckHolidayTable() {
     // Holiday on Dec 25 exists; task is on Dec 26. A title-only edit (no date move) must NOT throw
     // even though a holiday is in the table at a nearby date.

@@ -29,6 +29,35 @@ Next part: X.Y+1
 
 ---
 
+## Part 8.7 (Series 8) — Holiday-blocks-task-creation enforcement (verification) — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built (verification part):
+- **No production code changes.** The holiday-block enforcement already lives in `TaskService.create` (Part 8.1) and `TaskService.update` (Part 8.4, with the `dateMoved` gate from event 5.5's pattern). 8.7 is a verification part — confirms the spec'd behavior with a missing edge-case test.
+- The playbook step 2.3 covered an edge case not yet pinned: **task on a date that later becomes a holiday** (retroactive holiday). Existing tests covered (a) POST-on-holiday-blocked, (b) PUT-date-move-to-holiday-blocked, (c) PUT-with-adjacent-holiday-on-different-date-allowed. The missing case is PUT on a task whose own date now hosts a holiday — must succeed (no re-check on no-op dueDate).
+
+Files changed (count: 2):
+- `src/test/java/com/childcarewow/calendar/task/TaskUpdateIT.java` — `+retroactiveHolidayOnTaskDateDoesNotBlockSameDatePut`.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 57s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `TaskUpdateIT` — now 10/10 (was 9/9). The new test creates a task on a clear date, then creates an approved holiday for that exact date, then PUTs a title-only edit (same dueDate). The update succeeds because `dateMoved = !existing.getDueDate().equals(req.dueDate())` is false → holiday SELECT skipped.
+
+Notes / surprises:
+- The `dateMoved` gate from Part 8.4 was already the right pattern for this case — no new gate logic needed. The test just makes the contract explicit so a future refactor that "tightens" the holiday check to "every save" gets caught immediately.
+- The playbook's other two verification subcases (POST-on-holiday-blocked + PUT-date-move-to-holiday-blocked) were already covered in `TaskCreateIT.holidayOnDueDateBlocksCreation` and `TaskUpdateIT.dateMoveToHolidayThrows` from 8.1/8.4. 8.7's net delta is one test.
+- Worth noting: the architectural-spec retroactive-holiday rule for events (Part 5.7) creates a soft `HOLIDAY` flag rather than blocking edits. Tasks don't have an equivalent soft-flag rule (only DOUBLE_BOOKING for tasks, per Part 3.12). The retroactive-holiday-on-task case currently doesn't paint a soft flag on the task; if a future architectural decision adds task-holiday flagging, it'd flow through `SoftFlagService.recomputeForHoliday` (which today only paints events).
+
+### Carry-forward (none cleared, none added)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 8.8 — Soft-flag recompute on task save (verification).** Per playbook line 3315. The `softFlagService.recomputeForTask` call already fires from `TaskService.create` (8.1/8.2), `update` (8.4), `updateStatus` (8.5), and `delete` (8.6). 8.8 adds tests pinning the bidirectional `DOUBLE_BOOKING` pair behavior on create + on PUT date-move-out-of-overlap. Status-change clear is already covered by `TaskStatusPatchIT.transitionToDoneClearsOverlapPairFlags`; delete clear by `TaskDeleteIT.deleteClearsBidirectionalDoubleBookingFlagPair`. Net delta: 2 new ITs (create-time pair + update-clears-on-date-move).
+
+---
+
 ## Part 8.6 (Series 8) — `DELETE /api/v1/tasks/{id}` soft-delete — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat
