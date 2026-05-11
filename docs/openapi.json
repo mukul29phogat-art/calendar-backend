@@ -548,6 +548,73 @@
         }
       }
     },
+    "/api/v1/calendar" : {
+      "get" : {
+        "tags" : [ "calendar-controller" ],
+        "operationId" : "read",
+        "parameters" : [ {
+          "name" : "schoolId",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "from",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "date"
+          }
+        }, {
+          "name" : "to",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "date"
+          }
+        }, {
+          "name" : "filters",
+          "in" : "query",
+          "required" : false,
+          "schema" : {
+            "uniqueItems" : true,
+            "type" : "array",
+            "items" : {
+              "type" : "string"
+            }
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "oneOf" : [ {
+                      "$ref" : "#/components/schemas/BirthdayCalendarItem"
+                    }, {
+                      "$ref" : "#/components/schemas/EventCalendarItem"
+                    }, {
+                      "$ref" : "#/components/schemas/HolidayCalendarItem"
+                    }, {
+                      "$ref" : "#/components/schemas/ImportantCalendarItem"
+                    }, {
+                      "$ref" : "#/components/schemas/TaskCalendarItem"
+                    } ]
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/me" : {
       "get" : {
         "tags" : [ "auth-controller" ],
@@ -1025,6 +1092,103 @@
             }
           }
         }
+      },
+      "BirthdayCalendarItem" : {
+        "type" : "object",
+        "allOf" : [ {
+          "$ref" : "#/components/schemas/CalendarItem"
+        }, {
+          "type" : "object",
+          "properties" : {
+            "date" : {
+              "type" : "string",
+              "format" : "date"
+            },
+            "data" : {
+              "type" : "object"
+            }
+          }
+        } ]
+      },
+      "CalendarItem" : {
+        "required" : [ "kind" ],
+        "type" : "object",
+        "properties" : {
+          "kind" : {
+            "type" : "string"
+          }
+        },
+        "discriminator" : {
+          "propertyName" : "kind"
+        }
+      },
+      "EventCalendarItem" : {
+        "type" : "object",
+        "allOf" : [ {
+          "$ref" : "#/components/schemas/CalendarItem"
+        }, {
+          "type" : "object",
+          "properties" : {
+            "date" : {
+              "type" : "string",
+              "format" : "date"
+            },
+            "data" : {
+              "$ref" : "#/components/schemas/EventView"
+            }
+          }
+        } ]
+      },
+      "HolidayCalendarItem" : {
+        "type" : "object",
+        "allOf" : [ {
+          "$ref" : "#/components/schemas/CalendarItem"
+        }, {
+          "type" : "object",
+          "properties" : {
+            "date" : {
+              "type" : "string",
+              "format" : "date"
+            },
+            "data" : {
+              "$ref" : "#/components/schemas/HolidayView"
+            }
+          }
+        } ]
+      },
+      "ImportantCalendarItem" : {
+        "type" : "object",
+        "allOf" : [ {
+          "$ref" : "#/components/schemas/CalendarItem"
+        }, {
+          "type" : "object",
+          "properties" : {
+            "date" : {
+              "type" : "string",
+              "format" : "date"
+            },
+            "data" : {
+              "type" : "object"
+            }
+          }
+        } ]
+      },
+      "TaskCalendarItem" : {
+        "type" : "object",
+        "allOf" : [ {
+          "$ref" : "#/components/schemas/CalendarItem"
+        }, {
+          "type" : "object",
+          "properties" : {
+            "date" : {
+              "type" : "string",
+              "format" : "date"
+            },
+            "data" : {
+              "type" : "object"
+            }
+          }
+        } ]
       },
       "MeView" : {
         "type" : "object",
