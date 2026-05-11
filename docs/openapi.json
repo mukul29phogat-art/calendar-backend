@@ -12,7 +12,7 @@
     "/api/v1/holidays/{id}" : {
       "get" : {
         "tags" : [ "holiday-controller" ],
-        "operationId" : "findById",
+        "operationId" : "findById_1",
         "parameters" : [ {
           "name" : "id",
           "in" : "path",
@@ -92,7 +92,7 @@
     "/api/v1/events/{id}" : {
       "get" : {
         "tags" : [ "event-controller" ],
-        "operationId" : "findById_1",
+        "operationId" : "findById_2",
         "parameters" : [ {
           "name" : "id",
           "in" : "path",
@@ -170,6 +170,50 @@
       }
     },
     "/api/v1/tasks" : {
+      "get" : {
+        "tags" : [ "task-controller" ],
+        "operationId" : "list_1",
+        "parameters" : [ {
+          "name" : "schoolId",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "from",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "date"
+          }
+        }, {
+          "name" : "to",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "date"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/TaskView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "post" : {
         "tags" : [ "task-controller" ],
         "operationId" : "create",
@@ -203,7 +247,7 @@
     "/api/v1/holidays" : {
       "get" : {
         "tags" : [ "holiday-controller" ],
-        "operationId" : "list_3",
+        "operationId" : "list_4",
         "parameters" : [ {
           "name" : "schoolId",
           "in" : "query",
@@ -329,7 +373,7 @@
     "/api/v1/events" : {
       "get" : {
         "tags" : [ "event-controller" ],
-        "operationId" : "list_4",
+        "operationId" : "list_5",
         "parameters" : [ {
           "name" : "schoolId",
           "in" : "query",
@@ -490,10 +534,37 @@
         }
       }
     },
+    "/api/v1/tasks/{id}" : {
+      "get" : {
+        "tags" : [ "task-controller" ],
+        "operationId" : "findById",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/TaskView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/students" : {
       "get" : {
         "tags" : [ "students-controller" ],
-        "operationId" : "list_1",
+        "operationId" : "list_2",
         "parameters" : [ {
           "name" : "schoolId",
           "in" : "query",
@@ -531,7 +602,7 @@
     "/api/v1/schools" : {
       "get" : {
         "tags" : [ "schools-controller" ],
-        "operationId" : "list_2",
+        "operationId" : "list_3",
         "responses" : {
           "200" : {
             "description" : "OK",
@@ -552,7 +623,7 @@
     "/api/v1/classrooms" : {
       "get" : {
         "tags" : [ "classrooms-controller" ],
-        "operationId" : "list_5",
+        "operationId" : "list_6",
         "parameters" : [ {
           "name" : "schoolId",
           "in" : "query",

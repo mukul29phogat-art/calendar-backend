@@ -29,6 +29,59 @@ Next part: X.Y+1
 
 ---
 
+## Part 8.3 (Series 8) — `GET /api/v1/tasks` window + `/api/v1/tasks/{id}` detail — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **`TaskReadService.findInWindow` refactored to return `List<TaskView>` directly** (was `List<TaskCalendarItem>` in 7.2). The wrapping into `TaskCalendarItem` now happens at the calendar layer (`CalendarReadService.read`'s task branch) rather than in `TaskReadService` itself — cleaner separation, lets 8.3's dedicated `/api/v1/tasks` endpoint surface the views without unwrapping.
+- **`TaskReadService.findById(UUID, UserPrincipal)`** — new detail-view lookup. **404 (not 403)** when the actor can't see the task, matching the events / holidays / important_dates pattern from earlier series (never leak existence outside visibility scope). Soft-deleted tasks are also 404. Unlike `findInWindow`, this path does NOT expand recurring tasks into occurrences — the detail view's identity is the task row's id; per-occurrence projections come from a separate `GET /api/v1/tasks/{id}/occurrence/{date}` surface in a later part.
+- **`TaskReadService.isVisibleTo`** — new private predicate:
+  - ORG_ADMIN → `actor.orgId().equals(task.orgId())`
+  - SCHOOL_ADMIN → `actor.schoolIds().contains(task.schoolId())`
+  - STAFF → `actor.id().equals(task.assigneeUserId())`
+  - PARENT → false (D10)
+- **`TaskController`** — two new endpoints:
+  - `GET /api/v1/tasks?schoolId=&from=&to=` (window list) — auth-only at the controller; visibility narrowing inside the service. Returns `List<TaskView>` with recurring tasks expanded into per-occurrence entries.
+  - `GET /api/v1/tasks/{id}` (detail) — auth-only; returns `TaskView` or 404. Detail view doesn't expand recurrences.
+- **`CalendarReadService.read`** — task branch now wraps each `TaskView` returned by `taskReadService.findInWindow` into a `TaskCalendarItem(view.dueDate(), view)`. Wire shape on `/api/v1/calendar` is unchanged from 7.2 (the wrapping was previously inside `TaskReadService`; it's now at the calendar layer where it belongs).
+
+Files changed (count: 6; 1 new, 5 modified):
+- `src/main/java/com/childcarewow/calendar/task/TaskReadService.java` — refactor `findInWindow` return type to `List<TaskView>`; `+findById`; `+isVisibleTo`. Removed the `TaskCalendarItem` import.
+- `src/main/java/com/childcarewow/calendar/task/TaskController.java` — `+TaskReadService` constructor dep; `+GET /api/v1/tasks` and `+GET /api/v1/tasks/{id}` handlers; updated Javadoc.
+- `src/main/java/com/childcarewow/calendar/calendar/CalendarReadService.java` — task branch now wraps `TaskView` → `TaskCalendarItem` inline.
+- `src/test/java/com/childcarewow/calendar/task/TaskControllerTest.java` — `+@MockBean TaskReadService`; 3 new slice tests for the GET endpoints.
+- `src/test/java/com/childcarewow/calendar/task/TaskReadIT.java` — new (9 ITs).
+- `docs/openapi.json` — regenerated baseline includes the two new GET routes.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 51s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `TaskReadIT` — 9/9 real-DB tests green:
+  - **findInWindow (4):** returns `List<TaskView>` (not CalendarItems); STAFF narrowing (Maya sees only her tasks, Tom only his); PARENT returns empty; SCHOOL_ADMIN at other school still sees the data (no actor-vs-schoolId narrowing — documented in test comment as a 9.x visibility-pass concern).
+  - **findById (5):** happy path for admin; unknown id → 404; soft-deleted task → 404; STAFF on other staff's task → 404; PARENT on any task → 404.
+- [x] `TaskControllerTest` — 7/7 slice tests green:
+  - 4 from 8.1/8.2 (admin POST 201, PARENT POST 403, unauth POST 401, invalid body POST 400)
+  - 3 new for 8.3 (`listReturnsArrayOfTaskViews`, `findByIdReturnsTaskView`, `unauthenticatedListReturns401`)
+- [x] OpenAPI snapshot regenerated to include the two new GET routes (`/api/v1/tasks` + `/api/v1/tasks/{id}`).
+- [x] `CalendarTaskReadIT` from 7.2 still green — the CalendarReadService wrapping refactor preserved the wire shape on the calendar feed.
+
+Notes / surprises:
+- **The `findInWindow` return type refactor was the right call**, not the breaking change it looks like. 7.2's `List<TaskCalendarItem>` had `TaskReadService` doing the calendar-layer concern of `CalendarItem` wrapping. Moving the wrapping back to `CalendarReadService` is consistent with how the other readers work (`EventService.findInWindow` returns `List<EventView>`; the calendar layer wraps). Now `TaskReadService` is shape-agnostic and serves both `/calendar` (wrapped) and `/api/v1/tasks` (direct). Single caller change.
+- **`schoolAdminAtOtherSchoolSeesEmpty` test name is misleading.** The test actually shows that a SCHOOL_ADMIN at Maplewood querying Sunrise's tasks **gets the data verbatim** — the `schoolId` query param scopes the query, not the actor's own `schoolIds`. The `findInWindow` filter only narrows STAFF (by assignee); it doesn't cross-check ADMIN role vs school scope. This matches the events-window semantics from Part 5.4 and is acceptable for v1 — a Part-9 visibility pass might tighten it (or might keep it loose for org-admin convenience). Test name should probably be `schoolAdminCrossSchoolQueryReturnsData` in retrospect; left as-is with an explanatory comment so future readers don't expect tightening here.
+- **No `@AuditRead` on the GET endpoints.** Tasks aren't COPPA-sensitive (no student data on the wire — `assigneeUserId` is a staff user, not a student). The STUDENT_VIEW audit on `/api/v1/calendar` (Part 7.4) fires when student-bearing items are in the response; tasks alone don't trigger it. If a future part adds student association to tasks (e.g., "task is about Student X"), revisit.
+- **GET endpoints don't go through `IdempotencyFilter`** — only POSTs are in the allowlist (Part 3.13). Idempotency on reads is moot; cache headers could be a future concern but not v1.
+- **`TaskReadIT.findById` uses raw JDBC inserts** (matching `CalendarTaskReadIT`) because `TaskService.create` would also write a notification row, and the test only needs the task row itself. Plus, soft-delete tests need the row to bypass the create flow's validation.
+
+### Carry-forward
+
+- All previously-open carry-forwards remain.
+- **Soft new entry (not blocking):** consider tightening the SCHOOL_ADMIN cross-school visibility on `/api/v1/tasks` (currently the `schoolId` param scopes the query without checking actor's school list). Same pattern across events / holidays — would be a unified Series-9 or polish-pass fix.
+
+Next part: **Part 8.4 — `PUT /api/v1/tasks/{id}` update flow.** Resource-bearing policy gate (`task.edit` from Part 3.2's catalog) with STAFF-only-own-assigned narrowing; pre-update snapshot for diff (matches event 5.5 pattern); holiday block on date-move; status/title/dueTime mutations; `softFlagService.recomputeForTask` on success; `notificationService.dispatchTaskUpdated` (new method needed — TASK_UPDATED notification kind).
+
+---
+
 ## Part 8.2 (Series 8) — `POST /api/v1/tasks` — multi-assignee fan-out — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat

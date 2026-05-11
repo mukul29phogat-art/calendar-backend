@@ -4,6 +4,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
@@ -46,6 +47,7 @@ class TaskControllerTest {
   @Autowired MockMvc mvc;
   @MockBean PlatformUserDirectory directory;
   @MockBean TaskService service;
+  @MockBean TaskReadService readService;
   @MockBean com.childcarewow.calendar.crosscut.IdempotencyKeyRepository idempotencyKeyRepository;
 
   @Test
@@ -116,6 +118,66 @@ class TaskControllerTest {
                 .content("{}"))
         .andExpect(status().isBadRequest())
         .andExpect(jsonPath("$.error.code").value("VALIDATION_ERROR"));
+  }
+
+  @Test
+  void listReturnsArrayOfTaskViews() throws Exception {
+    when(directory.load(any(UUID.class))).thenReturn(actor(OLIVIA, Role.ORG_ADMIN));
+    when(readService.findInWindow(any(), any(), any(), any()))
+        .thenReturn(java.util.List.of(sampleTaskView()));
+
+    String token = signer.sign(OLIVIA.toString());
+    mvc.perform(
+            get("/api/v1/tasks")
+                .header("Authorization", "Bearer " + token)
+                .queryParam("schoolId", SUNRISE.toString())
+                .queryParam("from", "2026-09-01")
+                .queryParam("to", "2026-09-30"))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$[0].title").value("Storytime prep"))
+        .andExpect(jsonPath("$[0].assigneeUserId").value(MAYA.toString()));
+  }
+
+  @Test
+  void findByIdReturnsTaskView() throws Exception {
+    when(directory.load(any(UUID.class))).thenReturn(actor(OLIVIA, Role.ORG_ADMIN));
+    TaskView view = sampleTaskView();
+    when(readService.findById(any(), any())).thenReturn(view);
+
+    String token = signer.sign(OLIVIA.toString());
+    mvc.perform(get("/api/v1/tasks/{id}", view.id()).header("Authorization", "Bearer " + token))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.title").value("Storytime prep"))
+        .andExpect(jsonPath("$.id").value(view.id().toString()));
+  }
+
+  @Test
+  void unauthenticatedListReturns401() throws Exception {
+    mvc.perform(
+            get("/api/v1/tasks")
+                .queryParam("schoolId", SUNRISE.toString())
+                .queryParam("from", "2026-09-01")
+                .queryParam("to", "2026-09-30"))
+        .andExpect(status().isUnauthorized());
+  }
+
+  private static TaskView sampleTaskView() {
+    return new TaskView(
+        UUID.fromString("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"),
+        SUNRISE,
+        UUID.fromString("11111111-1111-1111-1111-111111111111"),
+        BUTTERFLIES,
+        "Storytime prep",
+        null,
+        MAYA,
+        LocalDate.of(2026, 9, 15),
+        null,
+        TaskStatus.TODO,
+        TaskPriority.MEDIUM,
+        null,
+        null,
+        OffsetDateTime.now(),
+        OffsetDateTime.now());
   }
 
   private static UserPrincipal actor(UUID id, Role role) {
