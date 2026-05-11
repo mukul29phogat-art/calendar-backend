@@ -29,6 +29,49 @@ Next part: X.Y+1
 
 ---
 
+## Part 7.6 (Series 7) — Calendar perf benchmark + cutover — STATUS: ✅ done (scaled-down; full load test deferred to Series 11)
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **`CalendarReadPerfIT`** — gated perf-smoke harness (`@EnabledIfEnvironmentVariable("CALENDAR_PERF" = "1")`; CI skips by default). Seeds a scaled-down workload at one school: 5K events / 5K non-recurring tasks / 200 WEEKLY recurring tasks / 200 approved holidays (deterministic unique dates spaced 10 days apart so the `uq_holiday_school_date_approved` constraint is honored without random-collision dedup) / 500 important_dates. Runs 10 warm-up + 100 measurement reads of the May 2026 window. Emits `p50 / p95 / p99` to stdout.
+- **`docs/perf/7-calendar-benchmark.md`** — full methodology + the local numbers + four explicit findings + the deferred-to-Series-11 list. The doc is the canonical record; the test is the regeneration mechanism.
+
+Files changed (count: 3; 2 new, 1 progress):
+- `src/test/java/com/childcarewow/calendar/calendar/CalendarReadPerfIT.java` — new (1 gated test).
+- `docs/perf/7-calendar-benchmark.md` — new.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS. The perf IT is `@EnabledIfEnvironmentVariable`-gated so default verify skips it; no impact on normal CI.
+- [x] `CALENDAR_PERF=1 ./mvnw -B test-compile failsafe:integration-test -Dit.test=CalendarReadPerfIT` → green. Numbers captured below.
+
+Numbers (local Docker Postgres, 2026-05-11):
+- **p50 = 3,444 ms · p95 = 4,958 ms · p99 = 6,072 ms** (100 measurement reads, ~1,300 items per response across all 5 kinds).
+- Production target on RDS: p95 < 400 ms (architecture spec § 1.2). Local is ~12× over.
+
+Findings:
+1. **N+1 on event reads is the dominant cost.** `EventService.toViewWithJoins` runs 3 separate JDBC queries per event (attendees, students, exclusions). At ~250 in-window events, that's ~750 extra round-trips per request — accounts for almost all of the observed latency on local Docker. **Fix is straightforward**: batch each join table with `WHERE event_id IN (:ids)` once at the window read. Expected drop from ~4 s to ~50 ms per request. Deliberately deferred: the fix touches Part 5.4's visibility filter shape, and the right place to validate it is RDS at the full playbook scale.
+2. Recurring-task expansion is cheap (~50 ms for 200 rules emitting ~800 occurrences).
+3. STUDENT_VIEW audit is cheap (test seed produces zero student-bearing items; audit short-circuits; with student-bearing items, ~5–10 ms of REQUIRES_NEW commit overhead).
+4. Index coverage is correct — every window query hits its intended partial index. Recurring-task SELECT does a small school-scoped scan; consider a `(school_id) WHERE recurrence_id IS NOT NULL` partial index when row count grows.
+
+Notes / surprises:
+- **The local SLO is deliberately loose (`p95 ≤ 10 s`)** to track-without-gating the known N+1. The perf-IT is the canary; the production gate lives on RDS in Series 11. Documented inline in the IT's `P95_BUDGET_MILLIS` Javadoc + the benchmark doc.
+- **Holiday seed required deterministic unique dates** to satisfy `uq_holiday_school_date_approved`. First attempt used random dates with LinkedHashSet dedup — still got duplicates from a prior run's leftover rows when the @AfterAll cleanup didn't run (because @BeforeAll itself threw). Settled on 200 dates spaced 10 days apart from 2025-01-01 — collision-free by construction.
+- **Two compile gotchas in the perf IT** during the early build cycles: (a) `redundant cast to int` on `Period.getDays()` (Period already returns int); (b) an unused `Collections` import added when I sketched a placeholder method. `-Werror` caught both. Same pattern as 6.7's `@Autowired` gotcha — `-Werror` is the Series-wide safety net for "lint should fail the build."
+- **`mvn failsafe:integration-test` does NOT recompile.** Took two cycles to realize my edits to `P95_BUDGET_MILLIS` weren't picked up. The reliable invocation for this IT is `test-compile failsafe:integration-test`. Documented in the benchmark doc's "Re-running" section.
+- **The 1000-RPS k6 load test + actual cutover flip belong to Series 11**, not 7.6. Local Docker on Windows can't sustain 1000 RPS or simulate multi-instance concurrency in any way that produces meaningful numbers. The playbook step 5 (`VITE_USE_REAL_API_CALENDAR=true` cutover) is also blocked on Part 7.5 (FE shadow mode, operator-gated) having ≥ 7 days of clean diffs.
+
+### Carry-forward (one added)
+
+- **NEW:** `EventService.toViewWithJoins` N+1 fix — batch load attendees/students/exclusions in one `WHERE event_id IN (:ids)` query per join table. Series-11 perf pass + RDS validation.
+- All previously-open carry-forwards remain.
+
+Next part: **Part 7.5 — FE `calendarService.ts` shadow mode** (FE repo, operator-gated). Backend can move to **Series 8 — Tasks backend** in parallel; the perf-smoke validates the read path enough for Series 8 to build on top.
+
+---
+
 ## Part 7.4 (Series 7) — Calendar role-based visibility matrix + STUDENT_VIEW audit — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat
