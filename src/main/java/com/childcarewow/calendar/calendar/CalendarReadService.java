@@ -137,7 +137,10 @@ public class CalendarReadService {
     }
 
     if (wantTasks) {
-      items.addAll(taskReadService.findInWindow(schoolId, from, to, actor));
+      for (com.childcarewow.calendar.task.TaskView v :
+          taskReadService.findInWindow(schoolId, from, to, actor)) {
+        items.add(new TaskCalendarItem(v.dueDate(), v));
+      }
     }
 
     if (wantHolidays) {
