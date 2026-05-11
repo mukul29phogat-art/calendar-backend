@@ -189,7 +189,10 @@
             "content" : {
               "*/*" : {
                 "schema" : {
-                  "$ref" : "#/components/schemas/TaskView"
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/TaskView"
+                  }
                 }
               }
             }

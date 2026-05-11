@@ -29,6 +29,52 @@ Next part: X.Y+1
 
 ---
 
+## Part 8.2 (Series 8) — `POST /api/v1/tasks` — multi-assignee fan-out — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **`TaskService.create` now fans out.** Request shape unchanged (`assigneeUserIds: List<UUID>` was already in place from 8.1 to avoid a mid-series wire-shape break). Service-side: validates, runs the holiday block ONCE per request (whole batch rejects atomically), pre-validates every assignee + school/classroom before any DB write, then creates one Task row per assignee. When `size > 1`, every row gets the same freshly-generated `parent_task_group_id` (UUID); when `size == 1`, the field stays null per the production-schema convention. Each saved row triggers its own `softFlagService.recomputeForTask` + `notificationService.dispatchTaskCreated` post-loop, so the recompute sees the full set of newly-inserted rows when looking for overlaps.
+- **Response shape changed from `TaskView` to `List<TaskView>`.** Uniform across single + multi cases — no wire-shape-shifting based on `size`. The controller's `idFrom="[0].id"` SpEL pulls the lead task id for the `@Audited` row; AuditAspect's SpEL evaluator handles list-index access cleanly.
+- **Validation tightened.** Service-side rejects duplicate `assigneeUserIds` in one request (matches the FE prototype's `tasksService.ts` behavior — duplicate assignees would create two identical tasks for the same user). Bean-validation `@NotEmpty` on the list is the primary guard; service-layer defensive check covers direct (non-controller) callers.
+- **Pre-validation before any DB write.** All `platformValidator.assertX` checks (school, classroom, classroom-belongs, every assignee) run before the first `taskRepo.saveAndFlush`. A bad assignee mid-list now rejects with zero rows written — `@Transactional` would roll back anyway, but pre-validation means cleaner error traces and no half-flushed L1 caches.
+
+Files changed (count: 5; 1 progress, 4 modified):
+- `src/main/java/com/childcarewow/calendar/task/TaskService.java` — fan-out loop, pre-validation, group_id generation, dedup check. Removed the 8.1 size>1 reject path; expanded Javadoc.
+- `src/main/java/com/childcarewow/calendar/task/TaskController.java` — response type `ResponseEntity<List<TaskView>>`. Added `idFrom="[0].id"` SpEL on `@Audited`.
+- `src/test/java/com/childcarewow/calendar/task/TaskCreateIT.java` — updated 8.1 tests for `List<TaskView>` return shape (every test now does `.get(0)` or asserts on the list). Removed the 8.1 multi-assignee-rejection test (no longer applicable). Added 4 new fan-out tests.
+- `src/test/java/com/childcarewow/calendar/task/TaskControllerTest.java` — slice happy-path now asserts `$[0].title` (array shape).
+- `docs/openapi.json` — regenerated (response wrapped as array).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m29s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `TaskCreateIT` — 10/10 real-DB tests green:
+  - **Single-assignee** (6): happy-path-with-all-fields, status/priority defaults, holiday block on whole batch, classroom-school mismatch, unknown assignee, notification row + recipient.
+  - **Multi-assignee fan-out** (4):
+    - `multiAssigneeFanOutCreatesOneRowPerAssigneeWithSharedGroupId` — 3 assignees → 3 distinct task ids, all 3 assignees represented once, single shared non-null `parent_task_group_id`.
+    - `multiAssigneeFanOutDispatchesOneTaskAssignedNotificationPerAssignee` — 2 assignees → exactly 2 TASK_ASSIGNED notification rows + 2 recipient rows.
+    - `duplicateAssigneeIdsInOneRequestRejected` — `[Maya, Maya]` → `ValidationException` with "duplicate" in the message.
+    - `midBatchUnknownAssigneeRollsBackEntireFanOut` — `[Maya, bogus-UUID]` → `ValidationException` from pre-validation; zero rows in `tasks` table afterward.
+- [x] `TaskControllerTest` — 4/4 slice tests green after `$[0].*` update.
+- [x] OpenAPI snapshot regenerated (POST /api/v1/tasks response shape changed from object → array).
+
+Notes / surprises:
+- **The single→list response shape change is breaking** but happens within Series 8 (8.1 → 8.2 is one logical unit), so no FE consumer is impacted. The FE prototype's `tasksService.ts` already treats the create path as "creates N rows", so the array shape matches the FE's mental model.
+- **Pre-validation order matters for clean errors.** First attempt validated assignees inside the loop, which meant the first-good-assignee task was already inserted when the second-bad-assignee failed. The `@Transactional` rolled it back correctly, but the test error trace was confusing ("0 rows but I saw an INSERT happen"). Moving all assertions to a pre-loop check makes the "rollback" path conceptually identical to "early-exit-no-writes" — easier to reason about.
+- **SpEL `[0].id` for audit `idFrom`.** AuditAspect builds a `StandardEvaluationContext(result)` with the returned object as the root, so the expression evaluates against the list directly. SpEL natively supports `[N]` indexing on `List`. If the list is empty (which shouldn't happen since the request has at least one assignee), the SpEL throws and `resolveTargetId` catches → audit row with `null target_id`. Defensive shape; never fires in practice.
+- **`em.refresh` runs N times in the fan-out.** Each task needs its DB-managed `created_at`/`updated_at` populated, so `saveAndFlush + em.refresh` is per-row. At N=3 that's 6 round-trips just for the audit columns. For Series-11 perf this might be worth a single batch-refresh, but the call shape is so small in absolute terms that the cost is negligible.
+- **`recomputeForTask` runs N times after all saves**, not during the loop. This matters: if Maya and Tom both have tasks at the same due date and one is created in this batch, the recompute on Maya's task sees Tom's already-inserted task and emits a DOUBLE_BOOKING pair correctly. If recompute ran inside the loop instead, Maya's recompute would miss Tom's row.
+- **`@Transactional` rolls back the whole batch on a single failure** — verified by the `midBatchUnknownAssigneeRollsBackEntireFanOut` test. The pre-validation makes this rare (the loop only runs after every assertX passes), but it's the safety net.
+
+### Carry-forward (none cleared, none added)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 8.3 — `GET /api/v1/tasks?…` calendar-window read + `GET /api/v1/tasks/{id}` detail.** Series-7 already exposed tasks on the calendar feed via `TaskReadService` (single-school window, used by `/api/v1/calendar`). 8.3 adds the dedicated `/api/v1/tasks` endpoint: same window semantics, same per-role visibility, but tasks-only response shape (`List<TaskView>` directly, not wrapped in `CalendarItem`). The Tasks-page UI needs this for its Kanban + List views per FE prototype.
+
+---
+
 ## Part 8.1 (Series 8) — `POST /api/v1/tasks` — single assignee — STATUS: ✅ done · **OPENS SERIES 8**
 Date: 2026-05-11
 Operator: Mukul Phogat
