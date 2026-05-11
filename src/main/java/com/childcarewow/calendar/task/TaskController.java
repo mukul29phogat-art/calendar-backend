@@ -12,6 +12,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -102,5 +103,22 @@ public class TaskController {
     Task existing = service.loadForPolicyCheck(id);
     policy.assertCan(actor, "task.edit", existing);
     return service.update(id, req, actor);
+  }
+
+  /**
+   * Focused status-only mutation for the Kanban drag-and-drop. Smaller payload than the full PUT;
+   * same {@code task.edit} policy gate (resource-bearing — STAFF can only PATCH their own assigned
+   * tasks). Idempotent: setting the status to its current value is a no-op (returns the current
+   * view, writes the audit row, skips the notification).
+   */
+  @PatchMapping("/{id}/status")
+  @Audited(action = "TASK_STATUS_UPDATE", targetType = "TASK")
+  public TaskView updateStatus(
+      @AuthenticationPrincipal UserPrincipal actor,
+      @PathVariable UUID id,
+      @Valid @RequestBody UpdateTaskStatusRequest req) {
+    Task existing = service.loadForPolicyCheck(id);
+    policy.assertCan(actor, "task.edit", existing);
+    return service.updateStatus(id, req.status(), actor);
   }
 }

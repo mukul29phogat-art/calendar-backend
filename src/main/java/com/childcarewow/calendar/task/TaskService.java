@@ -207,6 +207,46 @@ public class TaskService {
     return TaskView.fromEntity(saved);
   }
 
+  /**
+   * Focused status-only mutation for the Kanban drag-and-drop. Smaller surface than {@link
+   * #update}: no holiday check (dueDate unchanged), no platform-validator gates (assignee /
+   * classroom unchanged), no schoolId guard. Soft-flag recompute STILL runs because the
+   * DOUBLE_BOOKING rule (Part 3.12 / {@code findOverlapCandidates}) excludes {@code DONE} tasks — a
+   * TODO → DONE transition clears the overlap pair the task was previously contributing to, and
+   * DONE → TODO can introduce one.
+   *
+   * <p>No-op (same status as existing) returns the current view without writing a notification. The
+   * audit row still lands via the controller's {@code @Audited}.
+   */
+  @Transactional
+  public TaskView updateStatus(UUID id, TaskStatus newStatus, UserPrincipal actor) {
+    Task existing =
+        taskRepo
+            .findById(id)
+            .filter(x -> x.getDeletedAt() == null)
+            .orElseThrow(
+                () -> new com.childcarewow.calendar.exception.NotFoundException("Task", id));
+    if (newStatus == null) {
+      throw new ValidationException("status", "status is required");
+    }
+    if (newStatus == existing.getStatus()) {
+      // Idempotent no-op — return current view, skip the notification and the recompute.
+      return TaskView.fromEntity(existing);
+    }
+
+    Task prev = snapshotForDiff(existing);
+    existing.setStatus(newStatus);
+    existing.setUpdatedByUserId(actor.id());
+
+    Task saved = taskRepo.saveAndFlush(existing);
+    em.refresh(saved);
+
+    softFlagService.recomputeForTask(saved.getId());
+    notificationService.dispatchTaskUpdated(prev, saved);
+
+    return TaskView.fromEntity(saved);
+  }
+
   /** Detached snapshot of fields the post-update notification diff inspects. */
   private static Task snapshotForDiff(Task t) {
     Task s = new Task();

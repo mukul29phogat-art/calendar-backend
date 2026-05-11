@@ -29,6 +29,55 @@ Next part: X.Y+1
 
 ---
 
+## Part 8.5 (Series 8) — `PATCH /api/v1/tasks/{id}/status` (Kanban drag-and-drop) — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **`task/UpdateTaskStatusRequest`** — minimal request record `(TaskStatus status)` with `@NotNull`. Invalid enum values fail Jackson deserialization with a 400 before the controller body runs.
+- **`TaskController.updateStatus`** — `PATCH /api/v1/tasks/{id}/status` with `@Audited("TASK_STATUS_UPDATE", targetType="TASK")`. Same resource-bearing `policy.assertCan(actor, "task.edit", existing)` gate as PUT — STAFF restricted to their own assigned tasks.
+- **`TaskService.updateStatus(UUID id, TaskStatus newStatus, UserPrincipal actor)`** — focused mutation:
+  - Load existing (404 if missing/soft-deleted).
+  - Null status → `ValidationException(field="status")`.
+  - **No-op fast path**: if `newStatus == existing.getStatus()`, return current view immediately — skip the save, skip the recompute, skip the notification. Audit row still lands via `@Audited`.
+  - Otherwise: snapshot via `snapshotForDiff(existing)`, mutate status + `updatedByUserId`, `saveAndFlush + em.refresh`.
+  - `softFlagService.recomputeForTask` runs. **This matters**: the Part 3.12 DOUBLE_BOOKING rule excludes DONE tasks from `findOverlapCandidates`. A TODO → DONE transition clears the overlap pair the task contributed to; DONE → TODO can introduce one. Skipping the recompute would leave stale flags.
+  - `notificationService.dispatchTaskUpdated(prev, saved)` — the existing 8.4 dispatcher already handles the status-only branch (writes `TASK_STATUS_CHANGED` when only status changed).
+
+Files changed (count: 5; 1 new, 3 modified, 1 progress, 1 test):
+- `src/main/java/com/childcarewow/calendar/task/UpdateTaskStatusRequest.java` — new (request record).
+- `src/main/java/com/childcarewow/calendar/task/TaskService.java` — `+updateStatus`.
+- `src/main/java/com/childcarewow/calendar/task/TaskController.java` — `+PatchMapping("/{id}/status")` handler.
+- `src/test/java/com/childcarewow/calendar/task/TaskStatusPatchIT.java` — new (6 ITs).
+- `docs/openapi.json` — regenerated baseline includes the new PATCH route + `UpdateTaskStatusRequest` schema.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m49s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `TaskStatusPatchIT` — 6/6 real-DB tests green:
+  - **`todoToInProgressWritesTaskStatusChanged`** — PATCH TODO → IN_PROGRESS writes exactly one `TASK_STATUS_CHANGED` notification.
+  - **`sameStatusIsNoOpAndWritesNoStatusChangedNotification`** — PATCH same status writes zero `TASK_STATUS_CHANGED` rows (the TASK_ASSIGNED row from initial creation is correctly excluded by the kind filter).
+  - **`unknownIdReturns404`** — random UUID → `NotFoundException`.
+  - **`softDeletedTaskReturns404`** — manual soft-delete then PATCH → `NotFoundException`.
+  - **`nullStatusRejected`** — service-level null status → `ValidationException(field="status")`.
+  - **`transitionToDoneClearsOverlapPairFlags`** — two same-school + same-assignee + same-dueDate TODO tasks have `DOUBLE_BOOKING` flag pairs (Part 3.12). PATCH one to DONE → `recomputeForTask` runs → both flags involving the DONE task clear (verified via `entity_id` AND `conflicting_entity_id` count = 0 across both tasks).
+- [x] OpenAPI snapshot regenerated.
+- [x] All earlier tests still green — `TaskCreateIT` (10), `TaskUpdateIT` (9), `TaskReadIT` (9), `TaskControllerTest` (7), `CalendarTaskReadIT` (5).
+
+Notes / surprises:
+- **The no-op test caught a setup-noise gotcha first time.** Initial assertion was `SELECT COUNT(*) FROM notifications WHERE related_entity_id = ?` which counts the TASK_ASSIGNED row from `taskService.create()` setup + any PATCH-produced rows. Returned 1, expected 0 → fail. Fixed by filtering on `kind = 'TASK_STATUS_CHANGED'`. **Pattern reminder**: any test that asserts on notification count must scope by `kind`, not just `related_entity_id`, because `taskService.create` always lands a TASK_ASSIGNED row alongside the entity it created.
+- **The `softFlagService.recomputeForTask` call is necessary even for status-only changes.** The recompute is cheap (one DELETE + N INSERTs over a tiny per-assignee/per-date result set), and skipping it would leave stale DOUBLE_BOOKING flags when a task transitions to DONE. Documented inline so a future refactor doesn't try to "optimize" by removing the call.
+- **The PATCH route uses `/status` as a sub-resource** rather than overloading the bare `/{id}` PATCH. The FE's Kanban drag-and-drop is the primary caller and benefits from a discoverable endpoint name; future PATCH paths for other single-field mutations (e.g., assignee swap) can follow the same convention.
+- **The Jackson enum-deserialization 400 is a Spring binding error**, which still falls through to the generic 500 path per the long-standing gap from Part 4.1. An invalid enum value (e.g., `{"status":"FINISHED"}`) doesn't currently produce a clean `VALIDATION_ERROR` envelope. Documented in the Part 4.1 / 7.1 carry-forward; the Series-wide binding-error polish would fix this and the malformed-date case together.
+
+### Carry-forward (none cleared, none added)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 8.6 — `DELETE /api/v1/tasks/{id}` soft-delete.** Resource-bearing `task.delete` policy gate; sets `deletedAt = now()`; `softFlagService.removeFlagsForTask(id)` clears the bidirectional DOUBLE_BOOKING flag pair (so the surviving side's flag is also cleaned up — same pattern as event delete from 5.6); `notificationService.dispatchTaskDeleted` writes `TASK_DELETED` to the assignee. Returns 204 No Content.
+
+---
+
 ## Part 8.4 (Series 8) — `PUT /api/v1/tasks/{id}` update flow — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat

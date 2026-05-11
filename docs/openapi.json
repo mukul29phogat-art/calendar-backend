@@ -540,6 +540,43 @@
         }
       }
     },
+    "/api/v1/tasks/{id}/status" : {
+      "patch" : {
+        "tags" : [ "task-controller" ],
+        "operationId" : "updateStatus",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/UpdateTaskStatusRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/TaskView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/whoami" : {
       "get" : {
         "tags" : [ "who-am-i-controller" ],
@@ -1220,6 +1257,16 @@
           },
           "attachmentUrl" : {
             "type" : "string"
+          }
+        }
+      },
+      "UpdateTaskStatusRequest" : {
+        "required" : [ "status" ],
+        "type" : "object",
+        "properties" : {
+          "status" : {
+            "type" : "string",
+            "enum" : [ "TODO", "IN_PROGRESS", "DONE" ]
           }
         }
       },
