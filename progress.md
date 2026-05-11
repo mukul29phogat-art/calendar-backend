@@ -29,6 +29,41 @@ Next part: X.Y+1
 
 ---
 
+## Part 6.8 (Series 6) — Holiday → notification pause logic verified — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built:
+- **Test-only PR.** No production code changes — Part 5.8 already wired the pause check inside `NotificationService.writeWithRecipients()` (via `checkPauseReason(Event)` which hits `holidays` with `approved=true AND deleted_at IS NULL`). 6.8 is the IT that proves the end-to-end pipeline now that the real `HolidayService` (6.1/6.4) can create approved rows through the supported path.
+- **`HolidayNotificationPauseIT`** — 4 tests composing `EventService` + `HolidayService` + `NotificationService` against real calendar + platform Postgres:
+  - `holidayCreatedFirstBlocksEventCreationAndNoNotificationWritten` — sanity chain. Approved holiday on Dec 25 → `eventService.create(..., inviteParents=true)` throws `EventOnHolidayException` → asserts zero event rows AND zero notification rows for the rejected title.
+  - `eventCreatedBeforeHolidayLeavesExistingNotificationUnpaused` — **pins the v1 non-retroactive contract.** Event with `inviteParents=true` on Dec 26 → notification has `paused=false`. Create approved holiday on Dec 26. The existing notification row is unchanged (still `paused=false`, no `[paused: ...]` prefix). The playbook's Common Failure Points explicitly carves out retroactive pause as out of scope for v1 — would require extending `SoftFlagService.recomputeForHoliday` to patch pending-but-unsent notifications. This test is the canary that fails first if a future change adds retroactive pause.
+  - `dispatchAfterHolidayCreationLandsPausedWithReasonAndPrefix` — the main happy path. Event with `inviteParents=false` on Dec 27 → no notification. Approve holiday on Dec 27. PUT event with `inviteParents=true` → off→on flip writes EVENT_INVITE through `dispatchEventUpdated`; pause check fires at write time. Asserts: `paused=true`, `paused_reason="Holiday: IT-hnp-Christmas-Eve-Eve"`, message starts with `[paused: Holiday: IT-hnp-Christmas-Eve-Eve] `, `kind="EVENT_INVITE"`.
+  - `pausedNotificationStillInsertsAllRecipientsSoUnpauseJobCanFlipFlag` — same setup as the prior test but asserts the recipient row IS inserted (count=1, user_id=Priya). This pins the "recipients are still inserted so a future unpause job can flip the flag without rebuilding the recipient set" semantic from Part 5.8.
+
+Files changed (count: 2):
+- `progress.md` — this entry.
+- `src/test/java/com/childcarewow/calendar/notification/HolidayNotificationPauseIT.java` — new (4 tests).
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 1m54s. 195 tests (was 191), 0 failures, 0 errors, 2 skipped (Linux-only Testcontainers); JaCoCo bundle ≥80%; Spotless clean.
+- [x] OpenAPI snapshot unchanged (no controller routes added — this is a test-only PR).
+- [x] HolidayNotificationPauseIT — 4/4 green on first verify after `spotless:apply`.
+- [x] Test cleanup uses `IT-hnp-%` name prefix on holidays + `IT-hnp-%` title prefix on events / notification rows. Cleans conflict_flags + notification_recipients + notifications + events + holidays in dependency order so cascade-free deletes work.
+
+Notes / surprises:
+- **The playbook's step 1 was internally inconsistent with its Common Failure Points.** Step 1 ("create event, then create holiday, then verify the existing notification has paused=true") describes retroactive pause; Step 3 + Common Failure Points carve out retroactive pause as out of scope for v1. Resolved in favor of the implementation reality: the test pins non-retroactive behavior and documents what would need to change for retroactive (extend `SoftFlagService.recomputeForHoliday`). If a reviewer asks for retroactive pause it's a tracked, scoped enhancement — not a regression.
+- **Sunrise's only PARENT is Priya** — the assertion on `recipient` being Priya is tied to the platform seed (`student_parents` table). If the seed adds another parent at Sunrise, the recipient count goes up and the "isEqualTo(1)" assertion breaks. Acceptable: any seed-shape change is a deliberate test refactor.
+- **`schoolEventRequest` uses `ZoneOffset.ofHours(-5)`** (EST, not EDT). Sunrise is in `America/New_York`. December dates fall outside DST, so EST is correct. If I'd used `-04:00` (EDT) for a Dec date the school-local date would still resolve correctly via `TimezoneService.toSchoolLocalDate`, but the literal-offset matching what the school is actually on at that date is cleaner.
+- **`PRIYA` import not removed.** The test references `PRIYA` only in the last test (recipient assertion). Was tempted to inline the UUID but kept the constant for readability. Lint-clean either way.
+
+Carry-forward (none cleared, none added):
+- All open carry-forwards from 6.7 remain. Architecture spec §7.8 amendment still pending. ShedLock for `IdempotencyPurgeJob` still done.
+
+Next part: **Series 6 backend is now 8/9 done (6.1–6.8 merged).** Remaining is the FE cutover trio — 6.2a, 6.2b, 6.9 — which all live in the Events_CCW frontend repo and need operator visual side-by-side compare. After the operator lands those, **Series 7 — Calendar read endpoint** begins (Part 7.1: `GET /api/v1/calendar` skeleton).
+
+---
+
 ## Part 6.7 (Series 6) — Nager.Date scheduled sync job + ShedLock — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat
