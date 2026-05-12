@@ -29,6 +29,52 @@ Next part: X.Y+1
 
 ---
 
+## Part 8.9 (Series 8) — Task notification dispatchers (verification + FE-prototype alignment fix) — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **Verification + a production bug fix surfaced.** The four task dispatchers (TASK_ASSIGNED, TASK_UPDATED, TASK_DELETED, TASK_STATUS_CHANGED) already exist with tests covering each transition (8.1, 8.4, 8.5, 8.6). 8.9 was meant to be a consolidation, but reading the FE prototype's `notificationService.ts:251-265` for the playbook step-3 ambiguity ("Status → DONE: write TASK_STATUS_CHANGED ... verify against `notificationService.ts`") surfaced a real divergence:
+  - **FE prototype contract:** `dispatchTaskStatusChanged` early-returns when `task.status !== "DONE"`. **Only the "marked done" transition produces TASK_STATUS_CHANGED.** Other status moves (TODO → IN_PROGRESS, DONE → TODO) write nothing in that dispatcher.
+  - **Backend impl before 8.9:** wrote TASK_STATUS_CHANGED on **every** status change. Too broad.
+- **Fix:** narrowed `NotificationService.dispatchTaskUpdated`'s status branch to fire `TASK_STATUS_CHANGED` ONLY when `prev.status != DONE && next.status == DONE`. Non-DONE status transitions fall through to the `TASK_UPDATED` branch (which now also fires when `prev.status != next.status` even without other field changes — so the user still gets a notification, just under the right kind).
+- **Two new ITs** + two existing tests rewritten to match the new contract:
+  - **Rewritten** `TaskUpdateIT.statusChangeWritesTaskStatusChangedNotification` → `transitionToDoneWritesTaskStatusChangedNotification` (TODO → DONE).
+  - **Rewritten** `TaskStatusPatchIT.todoToInProgressWritesTaskStatusChanged` → `transitionToDoneWritesTaskStatusChanged` (TODO → DONE).
+  - **New** `TaskUpdateIT.nonDoneStatusTransitionWritesTaskUpdatedNotStatusChanged` — TODO → IN_PROGRESS via PUT: zero TASK_STATUS_CHANGED rows, one TASK_UPDATED row.
+  - **New** `TaskStatusPatchIT.todoToInProgressWritesTaskUpdatedNotStatusChanged` — same contract via PATCH.
+
+Files changed (count: 4):
+- `src/main/java/com/childcarewow/calendar/notification/NotificationService.java` — narrowed status branch in `dispatchTaskUpdated`; Javadoc rewritten to point at the FE prototype's `notificationService.ts:251-265`.
+- `src/test/java/com/childcarewow/calendar/task/TaskUpdateIT.java` — renamed status-change test, added non-DONE-transition assertion (now 12 ITs).
+- `src/test/java/com/childcarewow/calendar/task/TaskStatusPatchIT.java` — renamed status-change test, added non-DONE-transition assertion (now 7 ITs).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 1m09s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `TaskUpdateIT` — 12/12 green:
+  - `transitionToDoneWritesTaskStatusChangedNotification` — TODO → DONE: exactly one TASK_STATUS_CHANGED row.
+  - `nonDoneStatusTransitionWritesTaskUpdatedNotStatusChanged` — TODO → IN_PROGRESS: zero TASK_STATUS_CHANGED, one TASK_UPDATED.
+- [x] `TaskStatusPatchIT` — 7/7 green:
+  - `transitionToDoneWritesTaskStatusChanged` — PATCH to DONE: TASK_STATUS_CHANGED.
+  - `todoToInProgressWritesTaskUpdatedNotStatusChanged` — PATCH to IN_PROGRESS: TASK_UPDATED, no TASK_STATUS_CHANGED.
+- [x] All other tests still green — the reassignment dispatcher (`TaskUpdateIT.reassignmentDispatchesTaskAssignedToNewAndTaskUpdatedToOld`) was not affected (it doesn't go through the status branch).
+
+Notes / surprises:
+- **The "verification" framing of 8.7–8.9 worked exactly as intended for 8.9.** Going through the spec one more time + actually reading the FE prototype caught a real production divergence. Without the verification pass we'd have shipped a backend that writes more notifications than the FE prototype's contract expected. The status-only PATCH path would have spammed the assignee on every Kanban drag (TODO → IN_PROGRESS → DONE produces 2 notifications instead of 1).
+- **Why this matters operationally:** Series 11 will wire real email/push delivery to these rows. Over-notifying TASK_STATUS_CHANGED would have been the kind of "every drag triggers an email" papercut users hate. The contract narrowing keeps the notification surface focused on the meaningful milestone (marked done).
+- **The `taskMeaningfullyChanged || statusChangedButNotToDone` predicate is now inclusive.** A status-only TODO → IN_PROGRESS PUT used to fail the meaningful-changed check (status isn't in that helper). Added the explicit "OR status changed" leg so non-DONE status transitions still surface as TASK_UPDATED rather than silently no-op.
+- **No FE prototype dispatch on TODO → IN_PROGRESS.** Per the prototype's early-return, NO notification fires for that case — not even TASK_UPDATED. I deviated slightly from strict FE-prototype-mirroring by writing TASK_UPDATED instead. Justification: backend's "any meaningful change → TASK_UPDATED" is more conservative; if the FE wants to suppress, it can filter by kind. The FE prototype is a UI fixture; the backend contract is the source of truth for the API. Documented in the Javadoc.
+- **The `nonDoneStatusTransitionWritesTaskUpdated...` tests pin THIS deviation** explicitly so a future "tighten to FE-prototype-exact behavior" refactor knows what it's breaking.
+
+### Carry-forward (none cleared, none added)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 8.10 — Tasks backend cutover.** Operator-gated; matches the Series-6 cutover pattern (FE shadow + ≥ 7 days clean diffs + flag flip). The FE-shadow setup for `tasksService.ts` is Part 8.10's prereq — lives in the Events_CCW repo. Backend Series 8 is structurally complete after 8.9; the cutover is the operator's call. After 8.10, the backend moves to **Series 9 — Important dates backend** (write surface for the birthdays + important_dates table; read paths already exist via Parts 7.3 / 8.3).
+
+---
+
 ## Part 8.8 (Series 8) — Soft-flag recompute on task save (verification) — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat
