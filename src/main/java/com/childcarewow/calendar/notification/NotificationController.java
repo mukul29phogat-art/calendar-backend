@@ -2,10 +2,13 @@ package com.childcarewow.calendar.notification;
 
 import com.childcarewow.calendar.auth.UserPrincipal;
 import java.util.List;
+import java.util.UUID;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -22,9 +25,12 @@ public class NotificationController {
   static final String UNREAD_COUNT_HEADER = "X-Unread-Count";
 
   private final NotificationReadService readService;
+  private final NotificationMarkService markService;
 
-  public NotificationController(NotificationReadService readService) {
+  public NotificationController(
+      NotificationReadService readService, NotificationMarkService markService) {
     this.readService = readService;
+    this.markService = markService;
   }
 
   /**
@@ -39,5 +45,26 @@ public class NotificationController {
     HttpHeaders headers = new HttpHeaders();
     headers.set(UNREAD_COUNT_HEADER, Long.toString(inbox.unreadCount()));
     return ResponseEntity.ok().headers(headers).body(inbox.notifications());
+  }
+
+  /**
+   * {@code POST /api/v1/notifications/{id}/read} (Part 11.3). Idempotent upsert; 404 if the actor
+   * isn't a recipient of the notification.
+   */
+  @PostMapping("/{id}/read")
+  public ResponseEntity<Void> markRead(
+      @AuthenticationPrincipal UserPrincipal actor, @PathVariable UUID id) {
+    markService.markRead(id, actor);
+    return ResponseEntity.noContent().build();
+  }
+
+  /**
+   * {@code POST /api/v1/notifications/read-all} (Part 11.3). Marks every visible UNREAD
+   * notification as read for the actor. Idempotent if called twice in the same session.
+   */
+  @PostMapping("/read-all")
+  public ResponseEntity<Void> markAllRead(@AuthenticationPrincipal UserPrincipal actor) {
+    markService.markAllRead(actor);
+    return ResponseEntity.noContent().build();
   }
 }

@@ -29,6 +29,51 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.3 (Series 11) — `POST /api/v1/notifications/{id}/read` + `/read-all` — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`POST /api/v1/notifications/{id}/read`** — idempotent upsert on `notification_reads(notification_id, user_id)`. 404 if the actor isn't a recipient (or the notification doesn't exist — same envelope, deliberately indistinguishable).
+- **`POST /api/v1/notifications/read-all`** — bulk-mark every visible UNREAD notification as read. Returns 204 No Content; the service-layer return is `int newlyRead` (not surfaced in the HTTP response — but useful for tests + future telemetry).
+- **`NotificationMarkService.markRead(notificationId, actor)`** — single-row path. Visibility gate via `existsByNotificationIdAndUserId(notifId, actor.id())` before the upsert; 404 NotFoundException on miss.
+- **`NotificationMarkService.markAllRead(actor)`** — bulk path. Loads actor's recipient ids, then `upsert` for each. Loop-based to keep the SQL simple; row count rarely exceeds 50-100 per actor (the FE's bell shows ~30).
+- **`ON CONFLICT (notification_id, user_id) DO NOTHING`** in the upsert SQL. `read_at` is DB-defaulted to `now()` on initial insert and preserved on conflict.
+- **Repository addition:** `NotificationRecipientRepository.existsByNotificationIdAndUserId(UUID, UUID)`.
+
+Files changed (count: 5; 2 new, 1 modified repo, 1 modified controller, 1 new test, 1 progress):
+- `src/main/java/com/childcarewow/calendar/notification/NotificationRecipientRepository.java` — `+existsByNotificationIdAndUserId`.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationMarkService.java` — new.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationController.java` — `+markRead`, `+markAllRead` endpoints; constructor takes `NotificationMarkService` dep.
+- `src/test/java/com/childcarewow/calendar/notification/NotificationMarkServiceIT.java` — new (6 ITs).
+- `docs/openapi.json` — regenerated for the new endpoints.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m30s. **325 tests** (was 319), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `NotificationMarkServiceIT` — 6/6 green:
+  - **`markReadInsertsRowAndIsIdempotent`** — two consecutive `markRead` calls → exactly 1 row in `notification_reads`.
+  - **`markReadByNonRecipientReturns404`** — Maya tries to mark Tom's notification read → `NotFoundException`. Existence-leak prevention.
+  - **`markReadOnUnknownNotificationReturns404`** — bogus id → `NotFoundException`.
+  - **`readAllMarksAllVisibleUnreadAndReturnsCount`** — Maya has 3 visible + 1 not-mine → `newlyRead=3`; Tom's row untouched (count=0).
+  - **`readAllIsIdempotentSecondCallReturnsZero`** — first call 2, second call 0.
+  - **`readAllWithEmptyInboxReturnsZero`** — Maya has no notifications → returns 0.
+
+Notes / surprises:
+- **404 vs 403 for cross-user reads.** Considered raising `ForbiddenException` ("you're not a recipient"), but settled on `NotFoundException` to match the existence-leak prevention pattern used in `EventService.findById` / `TaskReadService.findById` etc. The FE prototype doesn't have a UI for "this notification exists but you can't read it"; 404 is the only sensible outcome.
+- **The mark-read endpoints return 204 No Content.** No body. The FE's bell re-fetches `/me` after a successful mark to refresh the unread counter — there's no need to mirror the read state in the response. Saves a payload.
+- **`/read-all` doesn't return the newly-read count over the wire.** Service has it (`int newlyRead`) but the controller returns 204. If the FE ever needs the count, easy to add as a response header (`X-Newly-Read`); skipped for now.
+- **Used `JdbcTemplate.update` for the upsert** rather than a `@Modifying @Query` on the JPA repo. Reason: `ON CONFLICT` clauses with `DO NOTHING` are Postgres-native syntax; JPA's `@Modifying` would need a vendor-portable workaround. Simpler to bypass JPA for this one statement.
+- **No bulk `INSERT … VALUES (…), (…), (…) ON CONFLICT`** in `markAllRead`. Considered it; rejected. The per-row loop is N round-trips, but N is bounded by the actor's recipient row count (typically <50). A single VALUES batch would save round-trips at the cost of complex parameter binding. Revisit if profiling shows the loop is hot — not the case at current scale.
+
+### Carry-forward (no change)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 11.4 — Email dispatcher** (JavaMailSender + SMTP). External infrastructure: needs an SMTP relay (Mailgun / SES / Mailtrap dev sandbox). **Architecture spec §7.4 mandates the dev allowlist enforced at dispatch time** — outbound mail in dev mode is filtered to a whitelist. This Part is operator-blocked: needs `SMTP_*` secrets in LocalStack + the allowlist config.
+
+---
+
 ## Part 11.2 (Series 11) — `GET /api/v1/notifications/me` — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat
