@@ -29,6 +29,71 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.9 (Series 11) — Parent calendar visibility QA (doc + cross-cutting IT) — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`docs/qa/parent-visibility.md`** — operator-facing QA reference. Three sections:
+  1. **Visibility rules per entity** — canonical matrix for events / tasks / holidays / important-dates / soft-flags. Each rule cites the production code path with `file:line` AND the existing test anchor that proves it. No prose without anchors.
+  2. **Manual walkthrough checklist** — 17 numbered steps an operator runs as Priya (PARENT of Aanya) in dev mode. Re-uses the same complex-week fixture seeded by the new IT.
+  3. **Common-failure-point watch** — explicit DOM-inspection guidance for the soft-flag UI: the backend policy gate returns false for PARENT, but the FE must HIDE the container (not render empty).
+- **`CalendarReadServiceParentIT`** — cross-cutting real-DB IT. Stitches every per-entity visibility rule into one fixture + one `CalendarReadService.read(...)` call. Catches the "one entity's filter shifts, another compensates by accident" regression class that per-entity tests can't.
+
+**Complex-week fixture** at SUNRISE, window `[2027-08-15, 2027-08-21]`:
+- Event A — CLASSROOM at Butterflies, `inviteParents=true` → **visible**
+- Event B — CLASSROOM at Caterpillars (not Aanya's classroom) → **hidden**
+- Event C — CLASSROOM at Butterflies, `inviteParents=false` → **hidden**
+- Event D — CUSTOM with Aanya in `event_students` → **visible**
+- Event E — SCHOOL with Priya's user_id in `event_excluded_participants` → **hidden**
+- Event F — SCHOOL with Aanya's student_id in `event_excluded_participants` → **hidden**
+- Task G — assigned to Maya → **hidden** (D10: parents see zero tasks)
+- Holiday H — CUSTOM approved → **visible**
+- Holiday I — FEDERAL pending → **hidden**
+- Important J — Aanya's BIRTHDAY, `visibleToParents=true` → **visible**
+- Important K — Jordan's BIRTHDAY (other child), `visibleToParents=true` → **hidden** (own-child gate)
+- Important L — IMPORTANT, `visibleToParents=true` → **visible** (school-wide)
+- Important M — IMPORTANT, `visibleToParents=false` → **hidden**
+
+Expected parent feed: A, D, H, J, L (5 items).
+
+**8 test methods:**
+- `parentSeesExactlyTheVisibleSubset` — full result-set match. Asserts 5-item count + each kind's exact id list.
+- `noCalendarItemOfKindTaskInParentResponse` — D10 regression guard via `instanceof TaskCalendarItem`. Also queries DB to confirm Task G exists (so the test isn't passing because Task G doesn't exist).
+- `excludedByUserIdHidesEvent` — Event E specifically.
+- `excludedByChildStudentIdHidesEvent` — Event F specifically.
+- `pendingFederalHolidayHiddenFromParent` — Holiday I specifically.
+- `otherChildsBirthdayHiddenEvenWhenVisibleToParents` — Important K (re-anchors the 10.3 common-failure-point in cross-cutting context).
+- `staffActorSeesEveryRowExceptUnchanged` — sanity check: same fixture, STAFF actor sees the task + Jordan's birthday (parent-only filters don't apply) but still NOT the pending federal holiday (global filter). Catches "we accidentally over-filtered for STAFF too" regressions.
+- `softFlagPolicyDeniedForParent` — pins the playbook common-failure-point at the policy layer: `policyService.can(parent, "calendar.softFlag.see") == false` AND admin == true.
+
+Files changed (count: 3; 1 new doc, 1 new test, 1 progress):
+- `docs/qa/parent-visibility.md` — new operator-facing QA doc.
+- `src/test/java/com/childcarewow/calendar/calendar/CalendarReadServiceParentIT.java` — new (8 real-DB ITs).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m33s. All ITs green, JaCoCo bundle ≥80%, Spotless clean.
+- [x] `CalendarReadServiceParentIT` — 8/8 green, 36 seconds (the fixture seed is heavy because EventService.create runs through every cross-cutting service — platform validator + soft-flag recompute + notification dispatch — for each of 6 events).
+- [x] **No production code change.** The playbook spec explicitly says 11.9 is verification work; if the IT had surfaced a bug, that'd be a separate Part. None surfaced — every parent-visibility rule per spec works correctly when stitched together.
+
+Notes / surprises:
+- **No regression surfaced.** The cross-cutting IT could plausibly have caught a per-entity filter that broke when paired with another (e.g. "holiday approval gate works in isolation but is bypassed when called from CalendarReadService"). It didn't. Confidence: the per-entity ITs (19 parent-side tests across 6 IT files) are tight enough that the integration boundary doesn't introduce new gaps. The new IT is purely a regression guard — its value compounds with future entity additions.
+- **Heavy fixture cost (36s).** Six `EventService.create` calls + one `TaskService.create` + four `ImportantDateService.create` + two direct holiday inserts. The events cost is dominated by the platform-validator cache misses on first call (PRIYA, AANYA, JORDAN, BUTTERFLIES, CATERPILLARS, SUNRISE, MAYA, OLIVIA — eight cross-DB lookups). Subsequent tests in the same class run faster (cache warm). Acceptable for a once-per-CI-run IT.
+- **`@SuppressWarnings("unused")` on the discarded ids.** Events C, E, F + Important K, M are created and their ids assigned to local vars to make the seed read linearly, but the test methods reference them by TITLE (string match) rather than ID — easier to read at the point of assertion. The unused-id locals trigger `-Werror` without the annotation; with it, the code stays clean.
+- **Soft-flag policy gate test is unit-style.** I tested `policyService.can(...)` directly rather than driving a MockMvc 403 round-trip. The unit-style test pins the production-code line (the `case` arm in `PolicyServiceImpl`) which is what an FE-side bug would actually hit. A MockMvc-style test would just confirm Spring Security maps `ForbiddenException` to 403 — that's already verified elsewhere.
+- **STAFF sanity test catches over-filtering.** It runs the same fixture as STAFF and asserts STAFF sees the task + Jordan's birthday. If a future change accidentally widens the parent filter to staff (e.g. "actor.role() != ORG_ADMIN" instead of "actor.role() == PARENT"), this test fails fast. The pending-federal-holiday assertion stays in this test too because that's a GLOBAL filter (no role is supposed to see pending federal rows on the calendar feed — they only surface on the admin approval queue).
+- **Doc is operator-facing, not engineer-facing.** Wording deliberately avoids "the predicate" / "the gate fires" — uses plain phrases like "the row is hidden" + bullet lists. Engineers read the code anchors; operators read the rule + checklist.
+
+### Carry-forward (no change beyond Series 11 deferred)
+
+- All previously-open carry-forwards remain.
+- No new ones surfaced — the cross-cutting IT confirmed the existing per-entity filters compose correctly when stitched.
+
+Next part: **Part 11.10 — Frontend cutover: `notificationService.ts` + `conflictService.ts`.** Operator-gated (FE shadow ≥7 days clean against `/api/v1/notifications/me`). After this, **Series 11 closes at 9/10 + operator-gated 11.10** (only 11.6 push dispatcher remains in the backend — operator-blocked on Firebase creds). Alternative path: **Part 11.6 push dispatcher** if operator can unblock FCM creds + service-account JSON.
+
+---
+
 ## Part 11.8 (Series 11) — Holiday-aware suppression resume job — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat
