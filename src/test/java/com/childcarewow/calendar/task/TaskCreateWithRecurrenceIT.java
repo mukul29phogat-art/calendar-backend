@@ -8,7 +8,6 @@ import com.childcarewow.calendar.auth.UserPrincipal;
 import com.childcarewow.calendar.calendar.CalendarReadService;
 import com.childcarewow.calendar.calendar.TaskCalendarItem;
 import com.childcarewow.calendar.exception.InvalidRecurrenceException;
-import com.childcarewow.calendar.exception.ValidationException;
 import com.childcarewow.calendar.task.CreateTaskRequest.RecurrenceSpec;
 import java.time.LocalDate;
 import java.util.List;
@@ -37,7 +36,6 @@ class TaskCreateWithRecurrenceIT {
   private static final UUID BUTTERFLIES = UUID.fromString("44444444-0000-0000-0000-000000000001");
   private static final UUID OLIVIA = UUID.fromString("33333333-0000-0000-0000-000000000001");
   private static final UUID MAYA = UUID.fromString("33333333-0000-0000-0000-000000000004");
-  private static final UUID TOM = UUID.fromString("33333333-0000-0000-0000-000000000005");
 
   @Autowired TaskService taskService;
   @Autowired CalendarReadService calendarReadService;
@@ -162,28 +160,6 @@ class TaskCreateWithRecurrenceIT {
                 taskService.create(
                     requestFor("IT-tcr-bad-until", LocalDate.of(2027, 6, 1), spec), admin()))
         .isInstanceOf(InvalidRecurrenceException.class);
-  }
-
-  @Test
-  void recurrenceWithMultiAssigneeRejectedUntilPart9_2() {
-    RecurrenceSpec spec =
-        new RecurrenceSpec(RecurCycle.DAILY, null, null, null, LocalDate.of(2027, 6, 14));
-    CreateTaskRequest req =
-        new CreateTaskRequest(
-            "IT-tcr-multi-recur",
-            null,
-            SUNRISE,
-            null,
-            List.of(MAYA, TOM),
-            LocalDate.of(2027, 6, 1),
-            null,
-            TaskStatus.TODO,
-            TaskPriority.MEDIUM,
-            spec);
-
-    assertThatThrownBy(() -> taskService.create(req, admin()))
-        .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("Part 9.2");
   }
 
   @Test
