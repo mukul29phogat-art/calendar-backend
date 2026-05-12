@@ -869,6 +869,9 @@
           "priority" : {
             "type" : "string",
             "enum" : [ "LOW", "MEDIUM", "HIGH" ]
+          },
+          "recurrence" : {
+            "$ref" : "#/components/schemas/RecurrenceSpec"
           }
         }
       },
@@ -890,6 +893,31 @@
           "nano" : {
             "type" : "integer",
             "format" : "int32"
+          }
+        }
+      },
+      "RecurrenceSpec" : {
+        "required" : [ "cycle", "untilDate" ],
+        "type" : "object",
+        "properties" : {
+          "cycle" : {
+            "type" : "string",
+            "enum" : [ "DAILY", "WEEKLY", "MONTHLY" ]
+          },
+          "dueDayOfWeek" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "dueDayOfMonth" : {
+            "type" : "integer",
+            "format" : "int32"
+          },
+          "dueTime" : {
+            "$ref" : "#/components/schemas/LocalTime"
+          },
+          "untilDate" : {
+            "type" : "string",
+            "format" : "date"
           }
         }
       },

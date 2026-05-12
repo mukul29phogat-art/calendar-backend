@@ -29,6 +29,52 @@ Next part: X.Y+1
 
 ---
 
+## Part 9.1 (Series 9) — `POST /api/v1/tasks` with recurrence (single assignee) — STATUS: ✅ done · **OPENS SERIES 9**
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`CreateTaskRequest.RecurrenceSpec`** — new nested record `(cycle, dueDayOfWeek?, dueDayOfMonth?, dueTime?, untilDate)`. Mirrors the FE prototype's "Repeat …" form. Bean-validation is intentionally loose; the cycle-shape gates (WEEKLY requires `dueDayOfWeek`, MONTHLY requires `dueDayOfMonth`, `untilDate` ≤ taskDueDate + 5 years) live in `RecurrenceService.validate` from Part 3.6.
+- **`CreateTaskRequest` gained an optional `recurrence` field.** Back-compat constructor preserves all earlier call sites (defaults `recurrence=null` for non-recurring).
+- **`TaskService.create` now wires recurrence** per-row inside the existing fan-out loop. For each assignee: if `req.recurrence()` is present, build a transient `RecurrenceRule`, persist via `recurrenceService.create(rule, req.dueDate())` (which runs full validation), then stamp `task.recurrenceId` with the saved rule's id. Part 9.1 enforces `assignees.size() == 1` when recurrence is present (multi-assignee + recurrence lifts to Part 9.2 with the per-row independent-rule shape from D9). The loop is already structured per-row, so 9.2 just lifts the size guard and the existing iteration creates N independent rules naturally.
+- **`buildRule(RecurrenceSpec)` helper** — converts the request DTO to a transient `RecurrenceRule` entity. `RecurrenceService.create` is the validator + persister.
+
+Files changed (count: 5; 1 new test, 2 modified, 1 modified test fixture, 1 progress):
+- `src/main/java/com/childcarewow/calendar/task/CreateTaskRequest.java` — `+RecurrenceSpec` nested record, `+recurrence` field, back-compat constructor.
+- `src/main/java/com/childcarewow/calendar/task/TaskService.java` — `+RecurrenceService` dependency, recurrence-creation branch inside the per-row loop, `+buildRule` helper.
+- `src/test/java/com/childcarewow/calendar/task/TaskCreateWithRecurrenceIT.java` — new (7 ITs).
+- `docs/openapi.json` — regenerated baseline includes `RecurrenceSpec` schema.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m27s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] `TaskCreateWithRecurrenceIT` — 7/7 real-DB tests green:
+  - **`dailyRuleRoundTripsThroughCreate`** — DAILY spec → rule row persisted with `cycle=DAILY` + `until_date`, task's `recurrence_id` stamped.
+  - **`weeklyRuleRoundTripsAndExpandsToFourOccurrencesInOneMonthWindow`** — WEEKLY rule (`dueDayOfWeek=3` Wednesday in 0=Sun..6=Sat); reads back through `CalendarReadService.read` for June 2027 → exactly 5 Wednesdays. Confirms the write/read integration: 9.1's write produces a rule the existing 7.2 expansion path consumes.
+  - **`monthlyRuleRoundTripsAndExpandsForFiveMonthWindow`** — MONTHLY rule (`dueDayOfMonth=15`); 5-month window → 5 occurrences (Jun 15 → Oct 15, 2027).
+  - **`weeklyMissingDueDayOfWeekRejected`** — `RecurrenceService.validate` throws `InvalidRecurrenceException` → 400 INVALID_RECURRENCE envelope.
+  - **`untilDateBeforeDueDateRejected`** — same path; until-before-due is invalid.
+  - **`recurrenceWithMultiAssigneeRejectedUntilPart9_2`** — `[Maya, Tom] + recurrence` → `ValidationException("Part 9.2")`.
+  - **`nullRecurrenceStillCreatesNonRecurringTask`** — back-compat ctor path; existing non-recurring behavior unchanged.
+- [x] All earlier tests still green — the 9-arg back-compat constructor on `CreateTaskRequest` keeps Parts 8.1–8.9 ITs compiling without modification.
+- [x] OpenAPI snapshot regenerated to include `RecurrenceSpec` and the now-typed `recurrence?` field on `CreateTaskRequest`.
+
+Notes / surprises:
+- **Per-row rule creation inside the existing fan-out loop is the right shape** for Part 9.2. The loop already handles per-assignee work; adding "create my own rule" per iteration is a one-liner. When 9.2 lifts the `size() == 1` guard on recurrence, the per-row code path is already correct — no refactor needed.
+- **D9 (independent rule per fanned-out row) means recurrence-on-multi-assignee creates N rules and N tasks**, where each task points at its own rule. The architectural rationale is per-assignee override autonomy: Maya skipping her Tuesday occurrence shouldn't affect Tom's. Storing a shared rule would couple their overrides through the `task_instance_overrides(task_id, occurrence_date)` UNIQUE constraint.
+- **Soft-flag recompute still runs on recurring task creation** (`softFlagService.recomputeForTask` in the post-loop). The recompute logic at Part 3.12 / `findOverlapCandidates` already handles non-recurring vs recurring tasks correctly — it queries the `tasks` table by `dueDate` (the master row's date), which is the right field for the parent task's overlap check. Per-occurrence overlap detection would be a much bigger surface (`tasks × task_instance_overrides` cross-join); deferred indefinitely.
+- **Calendar expansion was already in place from Part 7.2.** I half-expected to touch `TaskReadService` or `CalendarReadService` for the 9.1 wire-up, but the calendar feed already iterates `findRecurringForSchool` + `RecurrenceService.expand` from 7.2's task branch. Setting `task.recurrenceId` is the only delta; the read path discovers the rule automatically. Documented in the test (`weeklyRuleRoundTripsAndExpandsToFourOccurrencesInOneMonthWindow` exercises both write and read in one method).
+- **Holiday block still applies to the master task's `dueDate` only**, not to every expanded occurrence. A recurring task with `dueDate=2027-06-01` (non-holiday) and rule covering `2027-12-25` (Christmas, if approved as a holiday) would today expand to include Dec 25. This is a known gap and matches the FE prototype's behavior — per-occurrence holiday checking would need a different expansion model. Left as a follow-up.
+
+### Carry-forward (none cleared, one new)
+
+- **NEW (9.1 deferred):** per-occurrence holiday block on recurring task expansion. Today the holiday check fires only on master `dueDate`; expanded occurrences ignore holidays. Matches FE prototype; revisit if product wants stricter semantics.
+- All previously-open carry-forwards remain.
+
+Next part: **Part 9.2 — `POST /api/v1/tasks` with recurrence + multi-assignee.** Lifts the `assignees.size() == 1` guard from 9.1's recurrence path. The fan-out loop already creates a per-row rule when `recurrence` is present, so 9.2's net work is one-line: remove the guard, add a test asserting N tasks each get an independent `recurrence_id` while sharing `parent_task_group_id`.
+
+---
+
 ## Part 8.9 (Series 8) — Task notification dispatchers (verification + FE-prototype alignment fix) — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat
