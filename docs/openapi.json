@@ -874,6 +874,27 @@
         }
       }
     },
+    "/api/v1/notifications/me" : {
+      "get" : {
+        "tags" : [ "notification-controller" ],
+        "operationId" : "listMyNotifications",
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/NotificationView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/classrooms" : {
       "get" : {
         "tags" : [ "classrooms-controller" ],
@@ -1697,6 +1718,64 @@
           },
           "timezone" : {
             "type" : "string"
+          }
+        }
+      },
+      "NotificationView" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "kind" : {
+            "type" : "string",
+            "enum" : [ "EVENT_INVITE", "EVENT_UPDATED", "EVENT_CANCELLED", "TASK_ASSIGNED", "TASK_UPDATED", "TASK_DELETED", "TASK_STATUS_CHANGED", "TASK_OVERDUE" ]
+          },
+          "message" : {
+            "type" : "string"
+          },
+          "relatedEventId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "relatedEntityId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "relatedEventTitle" : {
+            "type" : "string"
+          },
+          "relatedEntityTitle" : {
+            "type" : "string"
+          },
+          "paused" : {
+            "type" : "boolean"
+          },
+          "pausedReason" : {
+            "type" : "string"
+          },
+          "createdAt" : {
+            "type" : "string",
+            "format" : "date-time"
+          },
+          "recipientUserIds" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string",
+              "format" : "uuid"
+            }
+          },
+          "readBy" : {
+            "type" : "array",
+            "items" : {
+              "type" : "string",
+              "format" : "uuid"
+            }
           }
         }
       },

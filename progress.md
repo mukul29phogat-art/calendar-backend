@@ -29,6 +29,61 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.2 (Series 11) — `GET /api/v1/notifications/me` — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`GET /api/v1/notifications/me`** — user-facing inbox endpoint. Auth-only at the controller; visibility is implicit (each user sees only their own row in `notification_recipients`). No path id — the actor is always the JWT-derived principal.
+- **`X-Unread-Count` response header** carries the actor's total unread count. CORS expose list (`SecurityConfig.setExposedHeaders`) already includes `X-Unread-Count` from earlier scaffolding.
+- **`NotificationReadService.loadFor(actor)`** — batched read path:
+  1. `recipientRepo.findByUserId(actor.id())` → notification ids the actor is a recipient of.
+  2. `notificationRepo.findByIdInOrderByCreatedAtDesc(ids)` — one batched load, newest-first.
+  3. `recipientRepo.findByNotificationIdIn(ids)` + `readRepo.findByNotificationIdIn(ids)` — two more batched loads.
+  4. Group recipients + readBy by notificationId in memory; build `NotificationView` per row; count unreads (actor NOT in readBy).
+- **Three queries total, no N+1.** Pinned by the IT.
+- **InboxView record** `(List<NotificationView>, long unreadCount)` — controller reads both fields, emits the list as body and the count as the header.
+- **Repository methods added:**
+  - `NotificationRepository.findByIdInOrderByCreatedAtDesc(Collection<UUID>)`
+  - `NotificationRecipientRepository.findByUserId(UUID)`, `findByNotificationIdIn(Collection<UUID>)`
+  - `NotificationReadRepository.findByNotificationIdIn(Collection<UUID>)`
+- **NotificationController** new — first file in this package on the read side. The existing `NotificationService` owns the write path; the new controller is read-only.
+
+Files changed (count: 6; 2 new prod, 3 modified repos, 1 new test, 1 progress):
+- `src/main/java/com/childcarewow/calendar/notification/NotificationRepository.java` — added batched query.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationRecipientRepository.java` — added per-user + batched-id queries.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationReadRepository.java` — added batched-id query.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationReadService.java` — new.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationController.java` — new.
+- `src/test/java/com/childcarewow/calendar/notification/NotificationReadServiceIT.java` — new (6 ITs).
+- `docs/openapi.json` — regenerated for the new endpoint.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m47s. **319 tests** (was 313), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `NotificationReadServiceIT` — 6/6 green:
+  - **`emptyInboxWhenNoNotificationsAddressedToUser`** — empty list + 0 unread.
+  - **`mayaSeesOnlyHerOwnNotifications`** — Tom's row exists in DB but isn't surfaced to Maya. The recipient table is the visibility gate.
+  - **`unreadCountTracksReadRows`** — seed 2 for Maya, mark one read → unreadCount=1, the read one has `readBy` containing Maya, the unread one doesn't.
+  - **`newestFirstOrdering`** — backdate one row by 1 minute via `UPDATE … SET created_at = now() - interval`. Verifies `ORDER BY created_at DESC`.
+  - **`groupNotificationSurfacesEveryRecipientInView`** — one notification with TWO recipients → view's `recipientUserIds` contains both ids, even when querying as one of them. The FE bell needs the full recipient list to render "{N} people" labels.
+  - **`nullActorReturnsEmpty`** — defensive guard; controller wouldn't normally invoke this path (auth filter rejects null principal) but the service still tolerates it.
+
+Notes / surprises:
+- **Per-user filter on the FIRST query.** I considered loading all notifications for a school and filtering by recipient in memory, but the recipient table is naturally scoped — `findByUserId(actor.id())` returns the user's own private inbox key list directly. No school-level scan; no leakage risk by construction.
+- **Three queries total — not five or six.** Earlier draft loaded each notification's recipients and reads in separate per-row calls (the classic N+1). Switched to `findByNotificationIdIn(visibleIds)` for both lookups, then grouped in memory. The IT doesn't assert query count explicitly, but the service is structured so it can't regress.
+- **De-dup pass on read-by aggregation.** The `notification_reads` table has a composite PK `(notification_id, user_id)` so duplicate rows can't exist at the DB level, but the service de-dups via a `Set<NotificationReadId>` anyway — belt-and-braces for a future schema refactor or a Hibernate quirk that returns the same row twice.
+- **No notification policy gate.** `notifications.see` exists in `PolicyServiceImpl` from earlier scaffolding but isn't asserted here — the visibility is already enforced by the recipient join. A user CAN'T see another user's notifications even if they tried to bypass the policy: there's no API surface that returns notifications by anything other than the recipient match. Confirmed by `mayaSeesOnlyHerOwnNotifications`.
+- **`X-Unread-Count` as `Long.toString`.** Header value is a plain decimal string. The FE bell reads `parseInt(response.headers.get('x-unread-count'))`. No special framing.
+
+### Carry-forward (no change)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 11.3 — `POST /api/v1/notifications/{id}/read` + `/read-all`.** Per-user read tracking via upsert on `notification_reads(notification_id, user_id, read_at)`. `/read-all`: bulk upsert for all currently-visible unread notifications. Policy check: only the actor's own reads (recipient must include actor).
+
+---
+
 ## Part 11.1 (Series 11) — `NotificationView` DTO with field aliasing — STATUS: ✅ done · **OPENS SERIES 11**
 Date: 2026-05-12
 Operator: Mukul Phogat
