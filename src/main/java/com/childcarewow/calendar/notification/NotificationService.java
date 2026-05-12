@@ -159,12 +159,14 @@ public class NotificationService {
    *       assignee gets a heads-up that the task was reassigned away). When both happen, the
    *       status-change branch is skipped — the assignment notification carries enough context for
    *       the new owner.
-   *   <li><b>Status changed only</b> ({@code prev.status != next.status}, same assignee): writes
-   *       {@code TASK_STATUS_CHANGED} to the assignee. This is the path the Kanban drag-and-drop
-   *       hits (8.5 will add a dedicated PATCH endpoint that goes through the same notification
-   *       method).
+   *   <li><b>Status changed to DONE</b> ({@code prev.status != DONE && next.status == DONE}, same
+   *       assignee): writes {@code TASK_STATUS_CHANGED} to the assignee. **Only the
+   *       transition-to-DONE produces this kind**, matching the FE prototype's {@code
+   *       dispatchTaskStatusChanged} in {@code notificationService.ts:251-265} — other status moves
+   *       (TODO ↔ IN_PROGRESS, DONE → TODO) fall through to the next branch and surface as {@code
+   *       TASK_UPDATED}.
    *   <li><b>Any other meaningful change</b> (title, description, dueDate, dueTime, priority,
-   *       classroomId): writes {@code TASK_UPDATED} to the assignee.
+   *       classroomId, OR non-DONE status transition): writes {@code TASK_UPDATED} to the assignee.
    *   <li><b>No-op</b> if the prev and next are field-equal on the diff dimensions above. An audit
    *       row still lands for the PUT (via {@code @Audited}), but no notification.
    * </ul>
@@ -190,13 +192,19 @@ public class NotificationService {
       return;
     }
 
-    if (!java.util.Objects.equals(prev.getStatus(), next.getStatus())) {
+    // FE prototype contract (notificationService.ts:251-265): TASK_STATUS_CHANGED is reserved for
+    // the "marked done" transition. Other status moves are surfaced as TASK_UPDATED.
+    boolean transitionedToDone =
+        next.getStatus() == com.childcarewow.calendar.task.TaskStatus.DONE
+            && prev.getStatus() != com.childcarewow.calendar.task.TaskStatus.DONE;
+    if (transitionedToDone) {
       writeTaskNotification(
-          next, NotificationKind.TASK_STATUS_CHANGED, "Status changed: " + next.getTitle());
+          next, NotificationKind.TASK_STATUS_CHANGED, "Marked done: " + next.getTitle());
       return;
     }
 
-    if (taskMeaningfullyChanged(prev, next)) {
+    if (taskMeaningfullyChanged(prev, next)
+        || !java.util.Objects.equals(prev.getStatus(), next.getStatus())) {
       writeTaskNotification(next, NotificationKind.TASK_UPDATED, "Updated: " + next.getTitle());
     }
   }

@@ -53,12 +53,13 @@ class TaskStatusPatchIT {
   }
 
   @Test
-  void todoToInProgressWritesTaskStatusChanged() {
-    UUID id = createTask("IT-ts-go-in-progress", LocalDate.of(2026, 9, 10), TaskStatus.TODO);
+  void transitionToDoneWritesTaskStatusChanged() {
+    // FE prototype contract: TASK_STATUS_CHANGED is reserved for the "marked done" transition.
+    UUID id = createTask("IT-ts-to-done", LocalDate.of(2026, 9, 10), TaskStatus.TODO);
 
-    TaskView updated = taskService.updateStatus(id, TaskStatus.IN_PROGRESS, admin());
+    TaskView updated = taskService.updateStatus(id, TaskStatus.DONE, admin());
 
-    assertThat(updated.status()).isEqualTo(TaskStatus.IN_PROGRESS);
+    assertThat(updated.status()).isEqualTo(TaskStatus.DONE);
     Integer count =
         calendarJdbc.queryForObject(
             "SELECT COUNT(*) FROM notifications "
@@ -66,6 +67,30 @@ class TaskStatusPatchIT {
             Integer.class,
             id);
     assertThat(count).isEqualTo(1);
+  }
+
+  @Test
+  void todoToInProgressWritesTaskUpdatedNotStatusChanged() {
+    // Non-DONE status transition → TASK_UPDATED, NOT TASK_STATUS_CHANGED. Pins the FE prototype
+    // contract on the PATCH path (parallels TaskUpdateIT's PUT-side coverage of the same rule).
+    UUID id = createTask("IT-ts-go-in-progress", LocalDate.of(2026, 9, 13), TaskStatus.TODO);
+
+    taskService.updateStatus(id, TaskStatus.IN_PROGRESS, admin());
+
+    Integer statusChanged =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM notifications "
+                + "WHERE related_entity_id = ? AND kind = 'TASK_STATUS_CHANGED'",
+            Integer.class,
+            id);
+    Integer updated =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM notifications "
+                + "WHERE related_entity_id = ? AND kind = 'TASK_UPDATED'",
+            Integer.class,
+            id);
+    assertThat(statusChanged).isZero();
+    assertThat(updated).isEqualTo(1);
   }
 
   @Test

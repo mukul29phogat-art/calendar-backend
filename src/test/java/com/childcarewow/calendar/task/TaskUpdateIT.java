@@ -82,17 +82,20 @@ class TaskUpdateIT {
   }
 
   @Test
-  void statusChangeWritesTaskStatusChangedNotification() {
-    UUID id = createTaskAndGetId("IT-tu-status", LocalDate.of(2026, 9, 11), MAYA, TaskStatus.TODO);
+  void transitionToDoneWritesTaskStatusChangedNotification() {
+    // FE prototype contract (notificationService.ts:251-265): TASK_STATUS_CHANGED is reserved for
+    // the "marked done" transition. TODO → DONE is the canonical case.
+    UUID id =
+        createTaskAndGetId("IT-tu-status-done", LocalDate.of(2026, 9, 11), MAYA, TaskStatus.TODO);
 
     taskService.update(
         id,
         requestFor(
-            "IT-tu-status",
+            "IT-tu-status-done",
             null,
             MAYA,
             LocalDate.of(2026, 9, 11),
-            TaskStatus.IN_PROGRESS,
+            TaskStatus.DONE,
             TaskPriority.MEDIUM),
         admin());
 
@@ -103,6 +106,41 @@ class TaskUpdateIT {
             Integer.class,
             id);
     assertThat(count).isEqualTo(1);
+  }
+
+  @Test
+  void nonDoneStatusTransitionWritesTaskUpdatedNotStatusChanged() {
+    // TODO → IN_PROGRESS is NOT a "marked done" transition; the FE prototype skips
+    // TASK_STATUS_CHANGED for it. Backend mirrors: writes TASK_UPDATED instead, zero
+    // TASK_STATUS_CHANGED rows.
+    UUID id =
+        createTaskAndGetId("IT-tu-status-wip", LocalDate.of(2026, 9, 12), MAYA, TaskStatus.TODO);
+
+    taskService.update(
+        id,
+        requestFor(
+            "IT-tu-status-wip",
+            null,
+            MAYA,
+            LocalDate.of(2026, 9, 12),
+            TaskStatus.IN_PROGRESS,
+            TaskPriority.MEDIUM),
+        admin());
+
+    Integer statusChanged =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM notifications "
+                + "WHERE related_entity_id = ? AND kind = 'TASK_STATUS_CHANGED'",
+            Integer.class,
+            id);
+    Integer updated =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM notifications "
+                + "WHERE related_entity_id = ? AND kind = 'TASK_UPDATED'",
+            Integer.class,
+            id);
+    assertThat(statusChanged).as("no TASK_STATUS_CHANGED for non-DONE move").isZero();
+    assertThat(updated).as("TASK_UPDATED instead").isEqualTo(1);
   }
 
   @Test
