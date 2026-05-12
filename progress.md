@@ -29,6 +29,49 @@ Next part: X.Y+1
 
 ---
 
+## Part 10.2 (Series 10) — `PUT` + `DELETE /api/v1/important-dates/{id}` — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`PUT /api/v1/important-dates/{id}`** — standard update; `schoolId` immutable (matches event/task convention from 5.5 + 8.4). Per-kind validation still applies on update path: switching `kind` to BIRTHDAY without a `studentId` → 400. If `studentId` changes to a new value, `PlatformEntityValidator.assertStudentExists` runs; same-value no-op skips the validator call (saves the cache hit).
+- **`DELETE /api/v1/important-dates/{id}`** — soft delete (`deleted_at = now()`). Idempotent on second delete: already-soft-deleted rows surface as 404 on the next call (matches Parts 5.6 + 8.6 soft-delete-as-404 read convention).
+- **`ImportantDateService.loadForPolicyCheck(id)`** — pre-policy load, mirrors `TaskService.loadForPolicyCheck`. Returns the entity for the controller; throws 404 on missing or soft-deleted.
+- **`@Audited(IMPORTANT_UPDATE)`** + **`@Audited(IMPORTANT_DELETE)`** wired on the controller. Same policy gate as 10.1 (`importantDate.manage` — admins only).
+- **No soft-flag recompute** + **no notification dispatch** on update or delete (same posture as 10.1 — important dates don't participate in overlap rules).
+
+Files changed (count: 4; 1 new test, 2 modified, 1 progress):
+- `src/main/java/com/childcarewow/calendar/importantdate/ImportantDateService.java` — added `loadForPolicyCheck`, `update`, `delete`.
+- `src/main/java/com/childcarewow/calendar/importantdate/ImportantDateController.java` — added `PUT` and `DELETE` endpoints.
+- `src/test/java/com/childcarewow/calendar/importantdate/ImportantDateUpdateDeleteIT.java` — new (7 ITs).
+- `docs/openapi.json` — regenerated (PUT + DELETE schemas).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m58s. **304 tests** (was 297), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `ImportantDateUpdateDeleteIT` — 7/7 green:
+  - **`updateRoundsTripChangedFields`** — label + date + visibleToParents all flip.
+  - **`schoolIdImmutable`** → `ValidationException("schoolId")`.
+  - **`updateToBirthdayWithoutStudentIdRejected`** → `ValidationException("studentId")`.
+  - **`deleteSoftDeletesRow`** — `deleted_at IS NOT NULL` in DB.
+  - **`doubleDeleteReturns404`** — second delete → `NotFoundException`.
+  - **`updateOnSoftDeletedReturns404`** — update after soft-delete → `NotFoundException`.
+  - **`updateChangingStudentValidatesExistence`** — promote to BIRTHDAY with `studentId=ZOE` ok; then changing to an unknown student id → `ValidationException` via `assertStudentExists`.
+
+Notes / surprises:
+- **Reuse of `CreateImportantDateRequest` on the update path** — same shape as create; same per-kind validation. No need for an `UpdateImportantDateRequest`. Matches Part 8.4's pattern of `CreateTaskRequest` on the task PUT path.
+- **No `updated_by_user_id` column on `important_dates`.** The V5 schema only has `created_by_user_id`. Update path mutates fields and lets the JPA `@PreUpdate` hook bump `updated_at`, but there's no actor-stamp on update. **Cross-referenced via the audit table** — `audit_events` carries `actor_user_id` + `target_id` for every IMPORTANT_UPDATE, so "who last updated this row" is recoverable from the audit log even without the column.
+- **Same-value `studentId` skips the validator.** If the request's `studentId` equals the existing's, we skip the platform call — small optimization, no impact on cache freshness (the validator caches 5 min anyway).
+- **No cascade on platform-side student delete** — the architecture spec's D2 says calendar doesn't observe platform deletes, so a deleted student can leave orphan `important_dates(kind=BIRTHDAY, student_id=…)` rows pointing nowhere. Read-path returns them; the FE will show "Unknown student" or hide them. Documented in 10.1 already; reaffirmed here.
+
+### Carry-forward (no change)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 10.3 — `GET /api/v1/important-dates`** with parent visibility filter (PARENT clamp: only `visibleToParents=true` rows; for BIRTHDAY, only own child). The visibility rule is already implemented in `ImportantDateReadService.isVisibleTo` (Part 7.3); 10.3 adds the dedicated GET endpoint + per-role IT matrix.
+
+---
+
 ## Part 10.1 (Series 10) — `POST /api/v1/important-dates` — STATUS: ✅ done · **OPENS SERIES 10**
 Date: 2026-05-12
 Operator: Mukul Phogat

@@ -126,6 +126,61 @@
         }
       }
     },
+    "/api/v1/important-dates/{id}" : {
+      "put" : {
+        "tags" : [ "important-date-controller" ],
+        "operationId" : "update_1",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/CreateImportantDateRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ImportantDateView"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete" : {
+        "tags" : [ "important-date-controller" ],
+        "operationId" : "delete_1",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK"
+          }
+        }
+      }
+    },
     "/api/v1/holidays/{id}" : {
       "get" : {
         "tags" : [ "holiday-controller" ],
@@ -154,7 +209,7 @@
       },
       "put" : {
         "tags" : [ "holiday-controller" ],
-        "operationId" : "update_1",
+        "operationId" : "update_2",
         "parameters" : [ {
           "name" : "id",
           "in" : "path",
@@ -189,7 +244,7 @@
       },
       "delete" : {
         "tags" : [ "holiday-controller" ],
-        "operationId" : "delete_1",
+        "operationId" : "delete_2",
         "parameters" : [ {
           "name" : "id",
           "in" : "path",
@@ -234,7 +289,7 @@
       },
       "put" : {
         "tags" : [ "event-controller" ],
-        "operationId" : "update_2",
+        "operationId" : "update_3",
         "parameters" : [ {
           "name" : "id",
           "in" : "path",
@@ -269,7 +324,7 @@
       },
       "delete" : {
         "tags" : [ "event-controller" ],
-        "operationId" : "delete_2",
+        "operationId" : "delete_3",
         "parameters" : [ {
           "name" : "id",
           "in" : "path",
@@ -1096,6 +1151,67 @@
           }
         }
       },
+      "CreateImportantDateRequest" : {
+        "required" : [ "date", "kind", "label", "schoolId" ],
+        "type" : "object",
+        "properties" : {
+          "label" : {
+            "maxLength" : 120,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "date" : {
+            "type" : "string",
+            "format" : "date"
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "kind" : {
+            "type" : "string",
+            "enum" : [ "BIRTHDAY", "IMPORTANT" ]
+          },
+          "studentId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "visibleToParents" : {
+            "type" : "boolean"
+          }
+        }
+      },
+      "ImportantDateView" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "date" : {
+            "type" : "string",
+            "format" : "date"
+          },
+          "label" : {
+            "type" : "string"
+          },
+          "kind" : {
+            "type" : "string",
+            "enum" : [ "BIRTHDAY", "IMPORTANT" ]
+          },
+          "studentId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "visibleToParents" : {
+            "type" : "boolean"
+          }
+        }
+      },
       "CreateHolidayRequest" : {
         "required" : [ "date", "name", "schoolId" ],
         "type" : "object",
@@ -1340,67 +1456,6 @@
           },
           "message" : {
             "type" : "string"
-          }
-        }
-      },
-      "CreateImportantDateRequest" : {
-        "required" : [ "date", "kind", "label", "schoolId" ],
-        "type" : "object",
-        "properties" : {
-          "label" : {
-            "maxLength" : 120,
-            "minLength" : 0,
-            "type" : "string"
-          },
-          "date" : {
-            "type" : "string",
-            "format" : "date"
-          },
-          "schoolId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "kind" : {
-            "type" : "string",
-            "enum" : [ "BIRTHDAY", "IMPORTANT" ]
-          },
-          "studentId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "visibleToParents" : {
-            "type" : "boolean"
-          }
-        }
-      },
-      "ImportantDateView" : {
-        "type" : "object",
-        "properties" : {
-          "id" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "schoolId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "date" : {
-            "type" : "string",
-            "format" : "date"
-          },
-          "label" : {
-            "type" : "string"
-          },
-          "kind" : {
-            "type" : "string",
-            "enum" : [ "BIRTHDAY", "IMPORTANT" ]
-          },
-          "studentId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "visibleToParents" : {
-            "type" : "boolean"
           }
         }
       },
