@@ -60,14 +60,18 @@ public class ImportantDateReadService {
     return items;
   }
 
-  private boolean isVisibleTo(ImportantDate row, UserPrincipal actor) {
+  /**
+   * Visibility predicate shared by the calendar feed (this service's {@link #findInWindow}) and the
+   * dedicated GET endpoint (Part 10.3's {@code ImportantDateService.list}). Package-private so both
+   * call sites can use the same predicate without duplicating it.
+   */
+  static boolean isVisibleToActor(ImportantDate row, UserPrincipal actor) {
     if (actor == null) {
       return false;
     }
     if (actor.role() != Role.PARENT) {
       return true;
     }
-    // PARENT clamp: visible_to_parents must be true; for birthdays, only own child.
     if (!row.isVisibleToParents()) {
       return false;
     }
@@ -75,7 +79,10 @@ public class ImportantDateReadService {
       UUID studentId = row.getStudentId();
       return studentId != null && actor.childStudentIds().contains(studentId);
     }
-    // IMPORTANT row marked visible_to_parents: every parent at the school sees it.
     return true;
+  }
+
+  private boolean isVisibleTo(ImportantDate row, UserPrincipal actor) {
+    return isVisibleToActor(row, actor);
   }
 }

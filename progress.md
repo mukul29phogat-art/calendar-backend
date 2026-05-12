@@ -29,6 +29,49 @@ Next part: X.Y+1
 
 ---
 
+## Part 10.3 (Series 10) — `GET /api/v1/important-dates` with parent visibility — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`GET /api/v1/important-dates?schoolId=&from=&to=`** — dedicated standalone GET endpoint, returns `List<ImportantDateView>` (not the polymorphic `CalendarItem` shape — that's reserved for the calendar feed from Part 7.3). Auth-only at the controller; visibility narrowing lives in the service.
+- **`ImportantDateService.list(schoolId, from, to, actor)`** — pulls rows from `repo.findInWindow`, filters by parent visibility, maps to view DTOs.
+- **Extracted `isVisibleToActor` as a package-private static helper on `ImportantDateReadService`.** Both call sites (calendar feed `findInWindow` + standalone GET `list`) reuse the same predicate so the visibility rule can't drift. The original private instance method now delegates to the static helper.
+- **Parent visibility rule** (already locked in Part 7.3):
+  - ADMIN / STAFF: every row in window.
+  - PARENT: `visible_to_parents=true` is the gate. For `kind=BIRTHDAY`, additionally requires `studentId ∈ actor.childStudentIds()`. For `kind=IMPORTANT` with `visible_to_parents=true`, every parent at the school sees it.
+
+Files changed (count: 5; 1 new test, 3 modified, 1 progress):
+- `src/main/java/com/childcarewow/calendar/importantdate/ImportantDateReadService.java` — extracted `isVisibleToActor` to package-private static helper; `isVisibleTo` now delegates.
+- `src/main/java/com/childcarewow/calendar/importantdate/ImportantDateService.java` — added `list` method.
+- `src/main/java/com/childcarewow/calendar/importantdate/ImportantDateController.java` — added `GET` endpoint.
+- `src/test/java/com/childcarewow/calendar/importantdate/ImportantDateListIT.java` — new (5 ITs).
+- `docs/openapi.json` — regenerated.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m57s. **309 tests** (was 304), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `ImportantDateListIT` — 5/5 green:
+  - **`adminSeesEveryRowInWindow`** — Olivia (ORG_ADMIN) sees all 4 fixture rows.
+  - **`staffSeesEveryRowInWindow`** — Maya (STAFF) sees all 4 fixture rows.
+  - **`parentSeesOwnChildBirthdayAndVisibleImportant`** — Priya (PARENT of Aanya) sees 2: Aanya's birthday + the visible IMPORTANT row. NOT Jordan's birthday (other child) and NOT the hidden IMPORTANT row.
+  - **`parentDoesNotSeeOtherChildBirthdayEvenWhenVisibleToParents`** — pins the playbook common-failure-point. Priya does NOT see `IT-idl-jordan-birthday` even though it has `visibleToParents=true`.
+  - **`parentSeesNothingWhenAllRowsAreInvisible`** — all 0 rows when every row has `visible_to_parents=false`, even if one is for own child.
+
+Notes / surprises:
+- **`isVisibleToActor` extraction was the right shape.** Originally I'd duplicated the 10-line predicate in `ImportantDateService.list`, but that risked drift between the calendar feed and the standalone GET. Extracted to a package-private static helper on `ImportantDateReadService`; the original private instance method delegates. Net behavior unchanged, but the rule now has exactly one canonical definition.
+- **The dedicated GET returns `ImportantDateView`, not `CalendarItem`.** This is the divergence between the calendar feed (sealed `CalendarItem` discriminator union from Part 7.2) and the entity-list reads (single-table `ImportantDateView`). The FE's `importantDatesService.ts` consumes the entity shape directly; only the calendar grid consumes `CalendarItem`. No new type needed — `ImportantDateView` already existed.
+- **No date-range validation.** `from >= to` would return an empty list (the SQL has `date >= :from AND date <= :to` — inverted range returns nothing). Per the existing convention in tasks/events GET endpoints, we don't reject inverted ranges; the empty result IS the response.
+- **No paging.** Window-scoped reads in the calendar/scheduling context are bounded by date range, not by row count. Series-12 polish might add cursor-paging if a school has thousands of important-dates in one month, but that's not a real shape in practice.
+
+### Carry-forward (no change)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 10.4 — FE cutover for `importantDatesService.ts`.** Operator-gated (FE shadow ≥7 days clean), same pattern as Series 6.9 / 7.6 / 8.10 / 9.6 cutovers. Sets `VITE_USE_REAL_API_IMPORTANT_DATES=true`; retires the FE mock. After this, **Series 10 closes (3/4 + operator-gated 10.4)** and Series 11 (Notifications dispatch + parent surface) opens.
+
+---
+
 ## Part 10.2 (Series 10) — `PUT` + `DELETE /api/v1/important-dates/{id}` — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat

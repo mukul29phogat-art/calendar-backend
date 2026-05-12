@@ -4,7 +4,9 @@ import com.childcarewow.calendar.auth.UserPrincipal;
 import com.childcarewow.calendar.exception.NotFoundException;
 import com.childcarewow.calendar.exception.ValidationException;
 import com.childcarewow.calendar.platform.PlatformEntityValidator;
+import java.time.LocalDate;
 import java.time.OffsetDateTime;
+import java.util.List;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -55,6 +57,24 @@ public class ImportantDateService {
 
     ImportantDate saved = repo.saveAndFlush(row);
     return ImportantDateView.fromEntity(saved);
+  }
+
+  /**
+   * Dedicated GET endpoint backing (Part 10.3) — returns non-deleted important_dates in the
+   * inclusive {@code [from, to]} window at the given school, filtered by parent visibility (PARENT
+   * clamp: {@code visible_to_parents=true} required; for BIRTHDAY rows, the student must be the
+   * parent's own child). Admins/staff see everything in the window.
+   *
+   * <p>Reuses {@link ImportantDateReadService#isVisibleToActor} so the calendar-feed and standalone
+   * GET stay in lockstep on the visibility rule.
+   */
+  @Transactional(readOnly = true)
+  public List<ImportantDateView> list(
+      UUID schoolId, LocalDate from, LocalDate to, UserPrincipal actor) {
+    return repo.findInWindow(schoolId, from, to).stream()
+        .filter(row -> ImportantDateReadService.isVisibleToActor(row, actor))
+        .map(ImportantDateView::fromEntity)
+        .toList();
   }
 
   /** Loads a row for the controller's pre-update / pre-delete policy gate. 404 otherwise. */
