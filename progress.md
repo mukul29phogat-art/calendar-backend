@@ -29,6 +29,60 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.8 (Series 11) — Holiday-aware suppression resume job — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`HolidaySuppressionResumeJob`** — `@Scheduled(cron = "0 0 * * * *", zone = "UTC")` hourly job that unpauses notifications whose related event/task date has rolled past in the school's local timezone. Per-school iteration handles multi-IANA-zone schools correctly (the playbook common-failure-point: a UTC-only job would unpause too early/late for non-UTC schools).
+- **`@SchedulerLock("HOLIDAY_RESUME", lockAtMostFor = "PT10M")`** binds the job to the ShedLock table — multi-instance ECS won't double-unpause. Mirrors the `IdempotencyPurgeJob` from Part 3.13.
+- **`resumeUsingClock(Clock)` test seam** — accepts an injectable clock so ITs can pin "today" deterministically without flaky wall-clock dependencies. Production calls `resume()` which delegates with `Clock.systemUTC()`.
+- **Per-school batch UPDATE** for events:
+  ```sql
+  UPDATE notifications SET paused = false, paused_reason = NULL
+  WHERE id IN (
+    SELECT n.id FROM notifications n JOIN events e ON e.id = n.related_entity_id
+    WHERE n.school_id = ? AND n.paused = true AND n.paused_reason LIKE 'Holiday: %'
+      AND n.kind IN ('EVENT_INVITE', 'EVENT_UPDATED', 'EVENT_CANCELLED')
+      AND (e.start_dt AT TIME ZONE ?)::date < ?
+      AND e.deleted_at IS NULL
+  )
+  ```
+  Same shape for tasks (no timezone conversion needed — `tasks.due_date` is already a school-local date by V3 convention).
+- **`< today_school_local`, not `== yesterday_school_local`** — two reasons: (1) idempotency (already-unpaused rows are excluded), (2) catch-up (if a scheduler tick was missed, the next run catches stragglers).
+
+Files changed (count: 3; 1 new prod, 1 new test, 1 progress):
+- `src/main/java/com/childcarewow/calendar/notification/HolidaySuppressionResumeJob.java` — new.
+- `src/test/java/com/childcarewow/calendar/notification/HolidaySuppressionResumeJobIT.java` — new (6 real-DB ITs).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 1m01s (mostly cached from prior 11.7 run). 257 unit + 334 IT tests across the suite, 3 skipped (2 Linux-only Testcontainers + 1 CALENDAR_PERF gated), JaCoCo bundle ≥80%, Spotless clean.
+- [x] `HolidaySuppressionResumeJobIT` — 6/6 green:
+  - **`unpausesPastEventNotificationsAfterHoliday`** — event on 2027-07-04, paused with reason `"Holiday: Independence Day"`; run job on 2027-07-06 (clock fixed) → notification's `paused=false`, `paused_reason=null`.
+  - **`leavesFutureEventNotificationsPaused`** — event on 2027-07-04, run job on 2027-07-01 → notification still paused (future event).
+  - **`leavesNonHolidayPausesAlone`** — notification with `paused_reason="Manual: operator action"` even with past date → NOT unpaused. Only `Holiday: %` prefix triggers the job.
+  - **`idempotentSecondRunDoesNotTouchAlreadyUnpausedRows`** — first run returns ≥1, second run returns 0. The `WHERE paused = true` clause excludes already-flipped rows.
+  - **`unpausesPastTaskNotifications`** — same shape for TASK_* kinds, using `tasks.due_date < ?`.
+  - **`leavesFutureTaskNotificationsPaused`** — future task → still paused.
+
+Notes / surprises:
+- **Dispatch on resume intentionally omitted.** The playbook spec says "Mark paused=false and dispatch." The unpause is here; the dispatch hand-off needs the cross-DB recipient → email-address resolver + delivery audit composition that's tracked as a follow-up. For now, unpaused notifications surface to the FE bell on the next `GET /me` poll; real outbound dispatch hooks in when the upstream pipeline lands.
+- **`Clock` injection over `TestPropertySource`** for time control. Static `LocalDate.now()` would force tests to mock JVM-level statics (PowerMock or similar). `Clock.fixed(...)` is the clean Java-8-era pattern; the prod entrypoint passes `Clock.systemUTC()` and the test passes a fixed instant. Same shape as a future Series-12 Micrometer custom-metric clock.
+- **Per-school iteration not per-row** — fewer timezone lookups (the `TimezoneService` Caffeine cache hits for nearly every iteration after the first), and the SQL UPDATE batches all matching rows for that school in one round trip. Catastrophic edge case (1000 schools each with 1 paused row) becomes 1000 single-row UPDATEs, but that's still fine; future optimization is `WHERE school_id IN (...)` grouped by timezone-equivalence-class.
+- **`AT TIME ZONE ?::text`** parameter binding — Postgres accepts the timezone arg as a string ('America/New_York') via JDBC parameter binding. The dynamic SQL approach with a fixed schema was the obvious risk (SQL injection?) but `JdbcTemplate.update(...)` parameterizes correctly.
+- **`<` not `<=`** — a holiday that runs THROUGH today (rare multi-day event) shouldn't be prematurely resumed. Strict less-than means: only resume notifications for events that already happened (yesterday or earlier).
+- **No notification of the operator** when the job unpauses rows. The log line is the audit; future Series-12 polish could push a Slack notification if `totalUnpaused` is suspicious (e.g. > 100 unpauses in one hour signals a missed run).
+
+### Carry-forward (no change beyond Series 11 deferred)
+
+- All previously-open carry-forwards remain.
+- **Real dispatch on resume** still deferred — the "compose dispatch pipeline" gap from 11.7 still applies. When the upstream pipeline lands, this job's unpause becomes a no-op for the dispatch side and the scheduler picks up the QUEUED row.
+
+Next part: **Part 11.9 — Parent calendar visibility QA pass.** Verification-shaped — exercises the full parent-side calendar feed across event types, holidays, important-dates, and ensures no leaked rows. May surface bugs in the existing visibility code (already tested per-component but not as one cross-cutting flow). Alternative: tackle **Part 11.6 push dispatcher** (operator now likely has FCM creds; needs Firebase service-account JSON in LocalStack secret).
+
+---
+
 ## Part 11.7 (Series 11) — `notification_deliveries` audit — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat
