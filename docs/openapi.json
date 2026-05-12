@@ -417,6 +417,50 @@
       }
     },
     "/api/v1/important-dates" : {
+      "get" : {
+        "tags" : [ "important-date-controller" ],
+        "operationId" : "list_4",
+        "parameters" : [ {
+          "name" : "schoolId",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        }, {
+          "name" : "from",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "date"
+          }
+        }, {
+          "name" : "to",
+          "in" : "query",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "date"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "type" : "array",
+                  "items" : {
+                    "$ref" : "#/components/schemas/ImportantDateView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
       "post" : {
         "tags" : [ "important-date-controller" ],
         "operationId" : "create_1",
@@ -447,7 +491,7 @@
     "/api/v1/holidays" : {
       "get" : {
         "tags" : [ "holiday-controller" ],
-        "operationId" : "list_4",
+        "operationId" : "list_5",
         "parameters" : [ {
           "name" : "schoolId",
           "in" : "query",
@@ -573,7 +617,7 @@
     "/api/v1/events" : {
       "get" : {
         "tags" : [ "event-controller" ],
-        "operationId" : "list_5",
+        "operationId" : "list_6",
         "parameters" : [ {
           "name" : "schoolId",
           "in" : "query",
@@ -833,7 +877,7 @@
     "/api/v1/classrooms" : {
       "get" : {
         "tags" : [ "classrooms-controller" ],
-        "operationId" : "list_6",
+        "operationId" : "list_7",
         "parameters" : [ {
           "name" : "schoolId",
           "in" : "query",
