@@ -4,10 +4,14 @@ import com.childcarewow.calendar.audit.Audited;
 import com.childcarewow.calendar.auth.UserPrincipal;
 import com.childcarewow.calendar.policy.PolicyService;
 import jakarta.validation.Valid;
+import java.util.UUID;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -37,5 +41,27 @@ public class ImportantDateController {
     policy.assertCan(actor, "importantDate.manage");
     ImportantDateView created = service.create(req, actor);
     return ResponseEntity.status(HttpStatus.CREATED).body(created);
+  }
+
+  @PutMapping("/{id}")
+  @Audited(action = "IMPORTANT_UPDATE", targetType = "IMPORTANT_DATE")
+  public ImportantDateView update(
+      @AuthenticationPrincipal UserPrincipal actor,
+      @PathVariable UUID id,
+      @Valid @RequestBody CreateImportantDateRequest req) {
+    // Load + assert; same policy gate as create (admins only — `importantDate.manage`).
+    service.loadForPolicyCheck(id);
+    policy.assertCan(actor, "importantDate.manage");
+    return service.update(id, req, actor);
+  }
+
+  @DeleteMapping("/{id}")
+  @Audited(action = "IMPORTANT_DELETE", targetType = "IMPORTANT_DATE")
+  public ResponseEntity<Void> delete(
+      @AuthenticationPrincipal UserPrincipal actor, @PathVariable UUID id) {
+    service.loadForPolicyCheck(id);
+    policy.assertCan(actor, "importantDate.manage");
+    service.delete(id, actor);
+    return ResponseEntity.noContent().build();
   }
 }

@@ -1,8 +1,11 @@
 package com.childcarewow.calendar.importantdate;
 
 import com.childcarewow.calendar.auth.UserPrincipal;
+import com.childcarewow.calendar.exception.NotFoundException;
 import com.childcarewow.calendar.exception.ValidationException;
 import com.childcarewow.calendar.platform.PlatformEntityValidator;
+import java.time.OffsetDateTime;
+import java.util.UUID;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -52,5 +55,59 @@ public class ImportantDateService {
 
     ImportantDate saved = repo.saveAndFlush(row);
     return ImportantDateView.fromEntity(saved);
+  }
+
+  /** Loads a row for the controller's pre-update / pre-delete policy gate. 404 otherwise. */
+  @Transactional(readOnly = true)
+  public ImportantDate loadForPolicyCheck(UUID id) {
+    return repo.findById(id)
+        .filter(x -> x.getDeletedAt() == null)
+        .orElseThrow(() -> new NotFoundException("ImportantDate", id));
+  }
+
+  /**
+   * Updates a row in place. {@code schoolId} is immutable on this path (matches the event/task
+   * convention from Parts 5.5 + 8.4 — changing schools is delete-and-recreate). Per-kind required
+   * fields still apply: switching to BIRTHDAY without a {@code studentId} → 400.
+   */
+  @Transactional
+  public ImportantDateView update(UUID id, CreateImportantDateRequest req, UserPrincipal actor) {
+    ImportantDate existing =
+        repo.findById(id)
+            .filter(x -> x.getDeletedAt() == null)
+            .orElseThrow(() -> new NotFoundException("ImportantDate", id));
+
+    if (!existing.getSchoolId().equals(req.schoolId())) {
+      throw new ValidationException("schoolId", "schoolId is immutable");
+    }
+    if (req.kind() == ImportantKind.BIRTHDAY && req.studentId() == null) {
+      throw new ValidationException("studentId", "studentId is required when kind=BIRTHDAY");
+    }
+    if (req.studentId() != null && !req.studentId().equals(existing.getStudentId())) {
+      platformValidator.assertStudentExists(req.studentId());
+    }
+
+    existing.setDate(req.date());
+    existing.setLabel(req.label());
+    existing.setKind(req.kind());
+    existing.setStudentId(req.studentId());
+    existing.setVisibleToParents(req.visibleToParentsOrDefault());
+
+    ImportantDate saved = repo.saveAndFlush(existing);
+    return ImportantDateView.fromEntity(saved);
+  }
+
+  /**
+   * Soft-deletes the row. Idempotent on second delete — already-deleted rows surface as 404 on the
+   * next call (matches the soft-delete-as-404 read convention from Parts 5.6 + 8.6).
+   */
+  @Transactional
+  public void delete(UUID id, UserPrincipal actor) {
+    ImportantDate existing =
+        repo.findById(id)
+            .filter(x -> x.getDeletedAt() == null)
+            .orElseThrow(() -> new NotFoundException("ImportantDate", id));
+    existing.setDeletedAt(OffsetDateTime.now());
+    repo.saveAndFlush(existing);
   }
 }
