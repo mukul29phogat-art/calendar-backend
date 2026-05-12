@@ -5,6 +5,7 @@ import com.childcarewow.calendar.exception.TaskOnHolidayException;
 import com.childcarewow.calendar.exception.ValidationException;
 import com.childcarewow.calendar.notification.NotificationService;
 import com.childcarewow.calendar.platform.PlatformEntityValidator;
+import com.childcarewow.calendar.recurrence.RecurrenceService;
 import com.childcarewow.calendar.softflag.SoftFlagService;
 import jakarta.persistence.EntityManager;
 import jakarta.persistence.PersistenceContext;
@@ -43,6 +44,7 @@ public class TaskService {
   private final PlatformEntityValidator platformValidator;
   private final SoftFlagService softFlagService;
   private final NotificationService notificationService;
+  private final RecurrenceService recurrenceService;
   private final JdbcTemplate calendarJdbc;
 
   @PersistenceContext private EntityManager em;
@@ -52,11 +54,13 @@ public class TaskService {
       PlatformEntityValidator platformValidator,
       SoftFlagService softFlagService,
       NotificationService notificationService,
+      RecurrenceService recurrenceService,
       @Qualifier("calendarJdbcTemplate") JdbcTemplate calendarJdbc) {
     this.taskRepo = taskRepo;
     this.platformValidator = platformValidator;
     this.softFlagService = softFlagService;
     this.notificationService = notificationService;
+    this.recurrenceService = recurrenceService;
     this.calendarJdbc = calendarJdbc;
   }
 
@@ -65,6 +69,14 @@ public class TaskService {
     validateRequest(req);
 
     List<UUID> assignees = req.assigneeUserIds();
+
+    // Part 9.1: recurrence + multi-assignee lands in Part 9.2 (independent rule per row per D9).
+    // For 9.1, recurrence is only supported on single-assignee requests.
+    if (req.recurrence() != null && assignees.size() != 1) {
+      throw new ValidationException(
+          "recurrence",
+          "recurrence + multi-assignee lands in Part 9.2; for now use single-assignee only");
+    }
 
     // Hard-block: due_date cannot fall on an approved holiday. Runs once for the whole batch — a
     // blocked date rejects every row, never partially.
@@ -91,6 +103,16 @@ public class TaskService {
 
     List<Task> saved = new ArrayList<>(assignees.size());
     for (UUID assignee : assignees) {
+      // Per-row recurrence rule creation. Single-assignee gets one rule; Part 9.2 will lift the
+      // single-assignee guard above and let N assignees each get an independent rule (per D9).
+      UUID recurrenceId = null;
+      if (req.recurrence() != null) {
+        com.childcarewow.calendar.task.RecurrenceRule rule = buildRule(req.recurrence());
+        com.childcarewow.calendar.task.RecurrenceRule persistedRule =
+            recurrenceService.create(rule, req.dueDate());
+        recurrenceId = persistedRule.getId();
+      }
+
       Task t = new Task();
       t.setOrgId(actor.orgId());
       t.setSchoolId(req.schoolId());
@@ -103,6 +125,7 @@ public class TaskService {
       t.setStatus(req.statusOrDefault());
       t.setPriority(req.priorityOrDefault());
       t.setParentTaskGroupId(groupId);
+      t.setRecurrenceId(recurrenceId);
       t.setCreatedByUserId(actor.id());
 
       Task persisted = taskRepo.saveAndFlush(t);
@@ -321,6 +344,21 @@ public class TaskService {
       throw new ValidationException(
           "assigneeUserIds", "duplicate assignee ids are not allowed in one request");
     }
+  }
+
+  /**
+   * Builds a transient {@link RecurrenceRule} from a request spec. Validation lives in {@link
+   * RecurrenceService#create} — cycle-shape gates (WEEKLY needs {@code dueDayOfWeek}, MONTHLY needs
+   * {@code dueDayOfMonth}, {@code untilDate} ≤ +5 years) all fire there.
+   */
+  private static RecurrenceRule buildRule(CreateTaskRequest.RecurrenceSpec spec) {
+    RecurrenceRule r = new RecurrenceRule();
+    r.setCycle(spec.cycle());
+    r.setDueDayOfWeek(spec.dueDayOfWeek());
+    r.setDueDayOfMonth(spec.dueDayOfMonth());
+    r.setDueTime(spec.dueTime());
+    r.setUntilDate(spec.untilDate());
+    return r;
   }
 
   /** Approved-holiday lookup for the dueDate block. Mirrors {@code EventService}'s helper. */
