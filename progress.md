@@ -29,6 +29,54 @@ Next part: X.Y+1
 
 ---
 
+## Part 10.1 (Series 10) — `POST /api/v1/important-dates` — STATUS: ✅ done · **OPENS SERIES 10**
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **New write surface for `important_dates`** (the V5 schema + entity + repository have been in place since Part 1.5; this Part wires the controller + service).
+- **`CreateImportantDateRequest`** record — `(label, date, schoolId, kind, studentId?, visibleToParents?)`. Bean-validation covers the unconditionally-required shape; per-kind required fields (BIRTHDAY ⇒ studentId) live in the service for an actionable 400 envelope.
+- **`ImportantDateService.create(req, actor)`** — minimal cross-cutting:
+  - Per-kind validation: `kind=BIRTHDAY` ⇒ `studentId` required.
+  - Platform entity validation: `assertSchoolExists`, `assertStudentExists` (if present).
+  - Persists row, returns `ImportantDateView`.
+  - **No soft-flag recompute** (important-dates don't participate in overlap rules).
+  - **No notification dispatch** (per architecture spec — birthday/important rows just appear on the calendar; the read-path's `visibleToParents` gate is the only parent-facing surface).
+- **`ImportantDateController`** — `POST /api/v1/important-dates` with `policy.assertCan(actor, "importantDate.manage")` (already wired in `PolicyServiceImpl` from Part 3.2 — admins only). `@Audited(action="IMPORTANT_CREATE", targetType="IMPORTANT_DATE")` lands an audit row.
+- **`CreateImportantDateRequest.visibleToParentsOrDefault()`** — defaults `null` and `false` both to `false` per architecture spec §5.5 (admins must opt in).
+
+Files changed (count: 5; 4 new, 1 progress):
+- `src/main/java/com/childcarewow/calendar/importantdate/CreateImportantDateRequest.java` — new.
+- `src/main/java/com/childcarewow/calendar/importantdate/ImportantDateService.java` — new.
+- `src/main/java/com/childcarewow/calendar/importantdate/ImportantDateController.java` — new.
+- `src/test/java/com/childcarewow/calendar/importantdate/ImportantDateCreateIT.java` — new (5 ITs).
+- `docs/openapi.json` — regenerated.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m49s. **297 tests** (was 292), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `ImportantDateCreateIT` — 5/5 green:
+  - **`createBirthdayPersistsAllFields`** — BIRTHDAY with `studentId=ZOE` (`55555555-0000-0000-0000-000000000001`) round-trips; DB label matches.
+  - **`createImportantPersistsWithoutStudentId`** — IMPORTANT row without `studentId` succeeds (label-only "Picture Day"-style entry).
+  - **`visibleToParentsDefaultsFalseWhenOmitted`** — null on wire → `visible_to_parents=false` in DB.
+  - **`birthdayWithoutStudentIdRejected`** → `ValidationException("studentId")`.
+  - **`unknownStudentIdRejected`** → `ValidationException` (via `PlatformEntityValidator.assertStudentExists` → `ValidationException`).
+
+Notes / surprises:
+- **Series 10 is shorter than Series 8/9** — 4 Parts (create, PUT/DELETE, GET with parent visibility, FE cutover). The entity + repo + read-side were front-loaded into Parts 1.5 and 7.3, so 10.1 is a pure wiring job (~75 lines of service + controller + DTO).
+- **No `updatedByUserId` column on `important_dates`.** Unusual vs Event/Task/Holiday — the V5 schema only tracks `created_by_user_id`. PUT in 10.2 will still bump `updated_at` via the JPA `@PreUpdate` hook, but won't stamp the actor. Documented for 10.2.
+- **No `classroomId` column either.** Important dates are school-scoped, not classroom-scoped. Architecture spec § 5.5 confirms this: birthdays attach to a student (which transitively maps to a classroom via the platform-owned `students` table) but the calendar row doesn't carry the classroom denormalized.
+- **`assertStudentExists` is the calendar's only cross-DB student check.** The platform validator caches it for 5 min via Caffeine (Part 2.3). Idempotent for the same student id across the cache window.
+- **No soft-flag triggers on important-date create.** Birthdays and important dates don't conflict with events/tasks the way holidays do (no hard block, no `recomputeForImportantDate`). Architecture spec § 7.x is silent on this — confirmed by the FE prototype which only soft-flags on event/task overlaps.
+
+### Carry-forward (no change beyond Series 9)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 10.2 — `PUT /api/v1/important-dates/{id}` + `DELETE /api/v1/important-dates/{id}`.** Standard CRUD: PUT permits label/date/visibleToParents/studentId edits; DELETE is soft-delete (`deleted_at`). `@Audited("IMPORTANT_UPDATE")` / `("IMPORTANT_DELETE")`. Visibility check on each via `policy.importantDate.manage`. Tests for happy paths + 404 on soft-deleted.
+
+---
+
 ## Part 9.5 (Series 9) — `PUT /api/v1/tasks/{id}/series` — ENTIRE_SERIES — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat
