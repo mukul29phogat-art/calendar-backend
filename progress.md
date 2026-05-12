@@ -29,6 +29,63 @@ Next part: X.Y+1
 
 ---
 
+## Part 9.5 (Series 9) — `PUT /api/v1/tasks/{id}/series` — ENTIRE_SERIES — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`ENTIRE_SERIES` branch in `TaskService.applySeriesEdit`** — updates the master task fields in place. Handles three rule states:
+  1. **Keep rule:** `recurrence == null && removeRecurrence != true` → no rule change.
+  2. **Update/create rule:** `recurrence != null` → `RecurrenceService.update(ruleId, ...)` if master already has a rule; otherwise create + stamp on master.
+  3. **Remove recurrence:** `removeRecurrence == true` → drop ALL overrides (`removeOverridesForTask`) + delete the rule + null-out `task.recurrenceId`. Task becomes a single non-recurring row.
+- **Holiday block** fires only when `req.dueDate() != master.getDueDate()` (matches `EventService.update`'s `startMoved` gate). Same-date edits never re-check holidays.
+- **`switch` dispatcher in `applySeriesEdit`** — three branches → three private helpers (`applyJustThis` / `applyThisAndFollowing` / `applyEntireSeries`). Stale `ENTIRE_SERIES` rejection removed.
+- **9.4 first-occurrence collapse now falls through.** Previously rejected with `"Part 9.5"` message; now `applyThisAndFollowing` routes `occurrenceDate == master.dueDate` to `applyEntireSeries(master, req, actor)` with the same request body. The wire shape is identical — the FE doesn't need a separate re-dispatch.
+- **`TaskSeriesEditRequest` grew 3 fields** — `classroomId` (nullable), `dueDate` (required for ENTIRE_SERIES, ignored for others), `removeRecurrence` (sentinel `Boolean`). Two back-compat constructors: 6-arg for 9.3 JUST_THIS, 9-arg for 9.4 THIS_AND_FOLLOWING. The 9.3 and 9.4 ITs compile unchanged.
+
+Files changed (count: 6; 1 new test, 2 modified earlier ITs, 2 modified, 1 progress):
+- `src/main/java/com/childcarewow/calendar/task/TaskSeriesEditRequest.java` — +3 fields + 2 back-compat ctors.
+- `src/main/java/com/childcarewow/calendar/task/TaskService.java` — `applySeriesEdit` switched to dispatcher; added `applyEntireSeries`; first-occurrence collapse now routes to applyEntireSeries.
+- `src/test/java/com/childcarewow/calendar/task/TaskSeriesEditJustThisIT.java` — dropped `entireSeriesRejectedUntilPart9_5` (now-obsolete).
+- `src/test/java/com/childcarewow/calendar/task/TaskSeriesEditThisAndFollowingIT.java` — dropped `firstOccurrenceCollapseRejectedUntilPart9_5` (now-obsolete; falls through cleanly).
+- `src/test/java/com/childcarewow/calendar/task/TaskSeriesEditEntireSeriesIT.java` — new (6 ITs).
+- `docs/openapi.json` — regenerated.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m58s. **292 tests** (was 288), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `TaskSeriesEditEntireSeriesIT` — 6/6 green:
+  - **`updateMasterTitleAcrossAllOccurrencesNoRuleChange`** — recurrence omitted; master's `recurrence_id` unchanged; title/priority/status updated.
+  - **`removeRecurrenceDropsRuleAndAllOverrides`** — seed two overrides, then `removeRecurrence=true` → 0 overrides remaining, 0 rule rows for the old ruleId, `task.recurrenceId` becomes null.
+  - **`dueDateMoveToHolidayRejected`** — moving master.dueDate onto an approved CUSTOM holiday → `TaskOnHolidayException`.
+  - **`sameDateNoHolidayCheck`** — holiday seeded ON master.dueDate AFTER create; update with `dueDate=masterDue` succeeds (holiday SELECT skipped per `dateMoved` gate).
+  - **`firstOccurrenceCollapseFromThisAndFollowingFallsThrough`** — `choice=THIS_AND_FOLLOWING + occurrenceDate=master.dueDate` is now silently routed to ENTIRE_SERIES; same effect as a direct ENTIRE_SERIES call.
+  - **`missingDueDateRejected`** — null `dueDate` → `ValidationException("dueDate")`.
+- [x] `TaskSeriesEditJustThisIT` 6/6 still green (was 7 before dropping `entireSeriesRejectedUntilPart9_5`).
+- [x] `TaskSeriesEditThisAndFollowingIT` 4/4 still green (was 5 before dropping the collapse-rejection test).
+
+Notes / surprises:
+- **`@AfterEach` title-pattern cleanup is fragile against tests that mutate the title.** First-cut 9.5 IT used `"still ok"` / `"collapsed-into-entire"` as the new titles after ENTIRE_SERIES — the cleanup pattern `WHERE title LIKE 'IT-tsees-%'` then missed them, and the orphan rows polluted the next test run. **Renamed the new titles to keep the `IT-tsees-` prefix**; both fixed and pinned. Going forward — IT-author cheat-sheet now includes "if a test renames a row, keep the IT-prefix in the new name."
+- **Required cleanup of orphan rows from earlier failed runs** (4 rows: `still ok` x2 + `collapsed-into-entire` x2). One-time manual fix:
+  ```sql
+  DELETE FROM task_instance_overrides WHERE task_id IN (SELECT id FROM tasks WHERE title IN ('still ok','collapsed-into-entire'));
+  DELETE FROM notifications WHERE related_entity_id IN (SELECT id FROM tasks WHERE title IN ('still ok','collapsed-into-entire'));
+  DELETE FROM tasks WHERE title IN ('still ok','collapsed-into-entire');
+  DELETE FROM recurrence_rules WHERE id NOT IN (SELECT recurrence_id FROM tasks WHERE recurrence_id IS NOT NULL);
+  ```
+- **`removeRecurrence` is a separate Boolean sentinel, not `recurrence == null` semantics.** The playbook common-failure-points says distinguish `null` (remove) from missing (no change). I used a separate field rather than `Optional<RecurrenceSpec>` (which Jackson handles awkwardly with records). Three explicit states map to three explicit branches.
+- **First-occurrence collapse is silent now** — the FE never sees a "Part 9.5" rejection error; the backend just does ENTIRE_SERIES. Matches the FE prototype's own collapse pattern (`updateTaskWithChoice` recursively calls itself with `ENTIRE_SERIES`).
+- **Notification dispatch on ENTIRE_SERIES** is the same `dispatchTaskUpdated(prev, saved)` as the regular PUT path — the diff-driven logic from Part 8.4 handles status/title/assignee/etc. changes the same way. No new notification kind needed.
+- **Soft-flag recompute runs on ENTIRE_SERIES** because the master row's overlap relations can change (date / assignee / dueTime). Same posture as the regular PUT update.
+
+### Carry-forward (no change)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 9.6 — Frontend cutover: `recurrenceService.ts` retired.** Operator-gated (FE shadow ≥7 days clean). Same pattern as Series 6.9 / 7.6 / 8.10. Sets `VITE_USE_REAL_API_RECURRENCE=true`, deletes the FE's recurrence expansion logic, deletes unused TS fields (`RecurrenceRule.startDayOfWeek`, `startDayOfMonth`, `startTime`). After this, **Series 9 closes (5/6 + operator-gated 9.6)** and we move to **Series 10** (which I'll re-check in the playbook).
+
+---
+
 ## Part 9.4 (Series 9) — `PUT /api/v1/tasks/{id}/series` — THIS_AND_FOLLOWING — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat

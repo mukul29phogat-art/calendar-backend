@@ -162,30 +162,6 @@ class TaskSeriesEditThisAndFollowingIT {
   }
 
   @Test
-  void firstOccurrenceCollapseRejectedUntilPart9_5() {
-    LocalDate masterDue = LocalDate.of(2027, 8, 2);
-    UUID masterId = createDailyRecurringTask("IT-tsetaf-collapse", masterDue);
-
-    assertThatThrownBy(
-            () ->
-                taskService.applySeriesEdit(
-                    masterId,
-                    new TaskSeriesEditRequest(
-                        EditChoice.THIS_AND_FOLLOWING,
-                        masterDue,
-                        "x",
-                        null,
-                        null,
-                        TaskStatus.TODO,
-                        TaskPriority.MEDIUM,
-                        false,
-                        null),
-                    admin()))
-        .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("ENTIRE_SERIES");
-  }
-
-  @Test
   void holidayOnSplitDateRejected() {
     LocalDate masterDue = LocalDate.of(2027, 8, 2);
     LocalDate split = LocalDate.of(2027, 8, 11);
