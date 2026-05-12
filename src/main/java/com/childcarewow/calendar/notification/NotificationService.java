@@ -50,18 +50,21 @@ public class NotificationService {
   private final NamedParameterJdbcTemplate platformNamedJdbc;
   private final JdbcTemplate calendarJdbc;
   private final TimezoneService timezoneService;
+  private final org.springframework.context.ApplicationEventPublisher events;
 
   public NotificationService(
       NotificationRepository notificationRepo,
       NotificationRecipientRepository recipientRepo,
       @Qualifier("platformNamedJdbcTemplate") NamedParameterJdbcTemplate platformNamedJdbc,
       @Qualifier("calendarJdbcTemplate") JdbcTemplate calendarJdbc,
-      TimezoneService timezoneService) {
+      TimezoneService timezoneService,
+      org.springframework.context.ApplicationEventPublisher events) {
     this.notificationRepo = notificationRepo;
     this.recipientRepo = recipientRepo;
     this.platformNamedJdbc = platformNamedJdbc;
     this.calendarJdbc = calendarJdbc;
     this.timezoneService = timezoneService;
+    this.events = events;
   }
 
   // -- public dispatchers ----------------------------------------------------
@@ -265,6 +268,9 @@ public class NotificationService {
     r.setNotificationId(saved.getId());
     r.setUserId(assignee);
     recipientRepo.save(r);
+
+    // Spring event: dispatch listener picks this up AFTER the surrounding tx commits.
+    events.publishEvent(new NotificationCreatedEvent(saved.getId()));
   }
 
   /**
@@ -316,6 +322,10 @@ public class NotificationService {
       r.setUserId(userId);
       recipientRepo.save(r);
     }
+
+    // Spring event: dispatch listener picks this up AFTER the surrounding tx commits. Skipped
+    // when recipientIds was empty (we early-return above) — no notification row, no event.
+    events.publishEvent(new NotificationCreatedEvent(saved.getId()));
   }
 
   /** Looks up an approved, non-deleted holiday on the event's school-local date. */
