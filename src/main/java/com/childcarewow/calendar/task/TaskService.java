@@ -289,14 +289,12 @@ public class TaskService {
     if (task.getRecurrenceId() == null) {
       throw new ValidationException("recurrence", "task is not recurring");
     }
-    if (req.choice() == EditChoice.ENTIRE_SERIES) {
-      throw new ValidationException("choice", "ENTIRE_SERIES lands in Part 9.5");
-    }
 
-    if (req.choice() == EditChoice.JUST_THIS) {
-      return applyJustThis(task, req, actor);
-    }
-    return applyThisAndFollowing(task, req, actor);
+    return switch (req.choice()) {
+      case JUST_THIS -> applyJustThis(task, req, actor);
+      case THIS_AND_FOLLOWING -> applyThisAndFollowing(task, req, actor);
+      case ENTIRE_SERIES -> applyEntireSeries(task, req, actor);
+    };
   }
 
   /**
@@ -330,6 +328,88 @@ public class TaskService {
   }
 
   /**
+   * ENTIRE_SERIES handler (Part 9.5) — updates the master task fields in place. The rule is
+   * updated, created, or removed based on the request:
+   *
+   * <ul>
+   *   <li>{@code removeRecurrence == true} → drop the rule + every override; master becomes a
+   *       non-recurring single task.
+   *   <li>{@code recurrence != null && master.recurrenceId != null} → update the existing rule.
+   *   <li>{@code recurrence != null && master.recurrenceId == null} → create + stamp on master.
+   *       (Master always has a rule here because {@code applySeriesEdit} pre-checks, but the branch
+   *       exists for the future "convert non-recurring → recurring via this endpoint" use case.)
+   *   <li>{@code recurrence == null} (and no remove flag) → leave the rule alone.
+   * </ul>
+   *
+   * <p>Holiday block fires only when {@code dueDate} differs from {@code master.dueDate} — matches
+   * the {@code EventService.update}'s {@code startMoved} gate. Overrides past the new {@code
+   * dueDate} are NOT cleaned up here (only THIS_AND_FOLLOWING shortens the window); ENTIRE_SERIES
+   * is conceptually "update master, all occurrences flow through the same rule" — overrides remain
+   * as per-occurrence patches.
+   */
+  private TaskView applyEntireSeries(Task master, TaskSeriesEditRequest req, UserPrincipal actor) {
+    if (req.title() == null || req.title().isBlank()) {
+      throw new ValidationException("title", "title is required for ENTIRE_SERIES");
+    }
+    if (req.status() == null) {
+      throw new ValidationException("status", "status is required for ENTIRE_SERIES");
+    }
+    if (req.priority() == null) {
+      throw new ValidationException("priority", "priority is required for ENTIRE_SERIES");
+    }
+    if (req.dueDate() == null) {
+      throw new ValidationException("dueDate", "dueDate is required for ENTIRE_SERIES");
+    }
+
+    Task prev = snapshotForDiff(master);
+
+    boolean dateMoved = !req.dueDate().equals(master.getDueDate());
+    if (dateMoved) {
+      String holidayName = findApprovedHolidayName(master.getSchoolId(), req.dueDate());
+      if (holidayName != null) {
+        throw new TaskOnHolidayException(holidayName);
+      }
+    }
+
+    master.setTitle(req.title());
+    master.setDescription(req.description() != null ? req.description() : master.getDescription());
+    master.setClassroomId(req.classroomId() != null ? req.classroomId() : master.getClassroomId());
+    master.setDueDate(req.dueDate());
+    master.setDueTime(req.dueTime());
+    master.setStatus(req.status());
+    master.setPriority(req.priority());
+    master.setUpdatedByUserId(actor.id());
+
+    // Recurrence handling — three states (see Javadoc).
+    boolean remove = req.removeRecurrence() != null && req.removeRecurrence();
+    if (remove) {
+      UUID oldRuleId = master.getRecurrenceId();
+      master.setRecurrenceId(null);
+      if (oldRuleId != null) {
+        recurrenceService.removeOverridesForTask(master.getId());
+        recurrenceService.remove(oldRuleId);
+      }
+    } else if (req.recurrence() != null) {
+      RecurrenceRule patch = buildRule(req.recurrence());
+      if (master.getRecurrenceId() != null) {
+        recurrenceService.update(master.getRecurrenceId(), patch, req.dueDate());
+      } else {
+        RecurrenceRule persisted = recurrenceService.create(patch, req.dueDate());
+        master.setRecurrenceId(persisted.getId());
+      }
+    }
+    // else: recurrence == null && removeRecurrence != true → leave the rule untouched.
+
+    Task saved = taskRepo.saveAndFlush(master);
+    em.refresh(saved);
+
+    softFlagService.recomputeForTask(saved.getId());
+    notificationService.dispatchTaskUpdated(prev, saved);
+
+    return TaskView.fromEntity(saved);
+  }
+
+  /**
    * THIS_AND_FOLLOWING handler (Part 9.4) — shortens the master rule's {@code until_date} to the
    * day before {@code occurrenceDate}, drops any overrides at/after the split, and creates a new
    * task at {@code occurrenceDate} carrying the user's edit payload + a fresh recurrence rule (per
@@ -345,10 +425,8 @@ public class TaskService {
       Task master, TaskSeriesEditRequest req, UserPrincipal actor) {
     if (req.occurrenceDate().equals(master.getDueDate())) {
       // Architecture spec §6.2: first-occurrence THIS_AND_FOLLOWING collapses to ENTIRE_SERIES.
-      // Until Part 9.5 lands, surface this explicitly so the FE can re-dispatch.
-      throw new ValidationException(
-          "occurrenceDate",
-          "first-occurrence THIS_AND_FOLLOWING collapses to ENTIRE_SERIES (Part 9.5)");
+      // Fall through to the 9.5 handler — the request body already carries the new master fields.
+      return applyEntireSeries(master, req, actor);
     }
     if (req.title() == null || req.title().isBlank()) {
       throw new ValidationException("title", "title is required for THIS_AND_FOLLOWING");

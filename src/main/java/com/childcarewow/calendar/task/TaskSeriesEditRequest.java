@@ -26,15 +26,18 @@ public record TaskSeriesEditRequest(
     @NotNull LocalDate occurrenceDate,
     String title,
     String description,
+    java.util.UUID classroomId,
+    LocalDate dueDate,
     LocalTime dueTime,
     TaskStatus status,
     TaskPriority priority,
     Boolean skipped,
+    Boolean removeRecurrence,
     @Valid CreateTaskRequest.RecurrenceSpec recurrence) {
 
   /**
-   * Back-compat constructor for Part 9.3 JUST_THIS callers that pre-date 9.4. Defaults {@code
-   * description}/{@code priority}/{@code recurrence} to null.
+   * Back-compat constructor for Part 9.3 JUST_THIS callers that pre-date 9.4. Defaults the wider
+   * fields to null.
    */
   public TaskSeriesEditRequest(
       EditChoice choice,
@@ -43,6 +46,47 @@ public record TaskSeriesEditRequest(
       LocalTime dueTime,
       TaskStatus status,
       Boolean skipped) {
-    this(choice, occurrenceDate, title, null, dueTime, status, null, skipped, null);
+    this(
+        choice,
+        occurrenceDate,
+        title,
+        null,
+        null,
+        null,
+        dueTime,
+        status,
+        null,
+        skipped,
+        null,
+        null);
+  }
+
+  /**
+   * Back-compat constructor for Part 9.4 THIS_AND_FOLLOWING callers that pre-date 9.5. Defaults
+   * {@code classroomId}, {@code dueDate}, {@code removeRecurrence} to null.
+   */
+  public TaskSeriesEditRequest(
+      EditChoice choice,
+      LocalDate occurrenceDate,
+      String title,
+      String description,
+      LocalTime dueTime,
+      TaskStatus status,
+      TaskPriority priority,
+      Boolean skipped,
+      CreateTaskRequest.RecurrenceSpec recurrence) {
+    this(
+        choice,
+        occurrenceDate,
+        title,
+        description,
+        null,
+        null,
+        dueTime,
+        status,
+        priority,
+        skipped,
+        null,
+        recurrence);
   }
 }

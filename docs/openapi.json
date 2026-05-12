@@ -1038,6 +1038,14 @@
           "description" : {
             "type" : "string"
           },
+          "classroomId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "dueDate" : {
+            "type" : "string",
+            "format" : "date"
+          },
           "dueTime" : {
             "$ref" : "#/components/schemas/LocalTime"
           },
@@ -1050,6 +1058,9 @@
             "enum" : [ "LOW", "MEDIUM", "HIGH" ]
           },
           "skipped" : {
+            "type" : "boolean"
+          },
+          "removeRecurrence" : {
             "type" : "boolean"
           },
           "recurrence" : {
