@@ -29,6 +29,63 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.x (Series 11) — Dispatch pipeline composition (orchestrator + email resolver) — STATUS: ✅ done
+
+**Off-playbook gap-filler.** The playbook spec ends Series 11 with the dispatchers (11.4–11.6) + audit (11.7) + the holiday-resume job (11.8), but never specifies the WIRE-UP that ties them together at the call site. Parts 11.7 + 11.8 both flagged "dispatch hand-off intentionally omitted" as deferred. This Part closes that gap with a standalone composition primitive that the operator (or a future scheduler) can call to trigger real dispatch.
+
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`PlatformUserEmailResolver`** (new, in `com.childcarewow.calendar.platform`) — resolves a calendar-owned `user_id` to the email on `platform.users`. Caffeine-cached (5 min TTL, 10K entries), Optional-wrapped so "user not found" negatively-caches without re-hitting the DB on every retry. Throws `PlatformUnavailableException` on DB outage (matches `PlatformEntityValidator` posture). Micrometer counters at `platform_email_resolver_cache_{hits,misses}`.
+- **`NotificationDispatchOrchestrator`** (new, in `com.childcarewow.calendar.notification`) — given a notification id, fans dispatch to every recipient on every channel the notification's kind warrants. Composes `NotificationRepository` + `NotificationRecipientRepository` + `PlatformUserEmailResolver` + `EmailRenderer` + `EmailDispatcher` + `NotificationDeliveryService`.
+  - **Per-kind channel routing:** all kinds get APP (in-app surfaces via `GET /me`); EMAIL only for `EVENT_INVITE` / `EVENT_UPDATED` / `EVENT_CANCELLED` / `TASK_OVERDUE` (frequent task transitions stay in-app to avoid email noise).
+  - **Pause handling:** `notification.paused=true` (the holiday-block path from `NotificationService.checkPauseReason`) → every channel records a PAUSED delivery with the notification's `paused_reason`. No email send.
+  - **`DispatchSummary` return** — per-channel counters (`appSent`, `appPaused`, `emailSent`, `emailPaused`, `emailBlocked`, `emailDisabled`, `emailFailed`, `total`). Useful for ITs + future dashboards.
+- **Intentional NON-wire-up.** The orchestrator is dormant in production: no caller invokes it yet. The decision of WHEN to call it (synchronously after `NotificationService` writes? `@TransactionalEventListener` post-commit? periodic scanner of un-dispatched notifications?) is an operator concern that lives in a follow-up sub-Part. Production code still doesn't send email; the orchestrator is the composition primitive ready for that switch.
+
+Files changed (count: 4; 3 new, 1 progress):
+- `src/main/java/com/childcarewow/calendar/platform/PlatformUserEmailResolver.java` — new.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDispatchOrchestrator.java` — new.
+- `src/test/java/com/childcarewow/calendar/notification/NotificationDispatchOrchestratorIT.java` — new (10 real-DB ITs with `@MockBean JavaMailSender`).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m59s. All ITs green, JaCoCo bundle ≥80%, Spotless clean.
+- [x] `NotificationDispatchOrchestratorIT` — 10/10 green:
+  - **`eventInviteDispatchesBothAppAndEmailForAllowlistedRecipient`** — Maya (allowlisted) + EVENT_INVITE → APP SENT + EMAIL SENT, JavaMailSender invoked once.
+  - **`taskAssignedDispatchesOnlyAppChannel`** — TASK_ASSIGNED → APP only (not in EMAIL_KINDS); JavaMailSender NOT invoked.
+  - **`taskOverdueDispatchesBothAppAndEmail`** — TASK_OVERDUE IS in EMAIL_KINDS; both channels sent.
+  - **`pausedNotificationRecordsPausedDeliveriesAcrossChannelsAndSkipsSmtp`** — paused notification: APP + EMAIL both record PAUSED with reason; JavaMailSender NOT invoked.
+  - **`nonAllowlistedRecipientRecordsEmailAsBlocked`** — `priya@parent.test` → EMAIL recorded as PAUSED with reason `BLOCKED_BY_ALLOWLIST`; JavaMailSender NOT invoked.
+  - **`unknownRecipientUserIdRecordsEmailAsFailed`** — Ghost user_id → EMAIL recorded as FAILED with reason `Recipient email not found in platform.users`; APP still records SENT (APP doesn't need email lookup).
+  - **`smtpFailureRecordsEmailAsFailedNotThrown`** — JavaMailSender throws `MailSendException` → EMAIL recorded as FAILED; orchestrator does NOT propagate.
+  - **`multiRecipientNotificationDispatchesPerRecipient`** — Maya + Tom on one notification → 2 APP rows + 2 EMAIL rows = 4 deliveries; JavaMailSender invoked twice.
+  - **`noRecipientsIsNoOpReturnsZeroes`** — notification with zero recipients → `total()=0`, no audit rows.
+  - **`unknownNotificationIdReturns404`** → `NotFoundException`.
+
+Notes / surprises:
+- **Two test infrastructure gotchas surfaced:**
+  1. **`@MockBean JavaMailSender` blows up Spring Boot's `mailHealthContributor` autoconfig** with `IllegalArgumentException: Beans must not be empty`. Fix: `@SpringBootTest(properties = "management.health.mail.enabled=false")`. New cheat-sheet entry for the IT-author rules.
+  2. **Platform seed has `@ccw-demo.test` emails for staff/admins** (e.g. `maya@ccw-demo.test`, `olivia@ccw-demo.test`), but the production `dev-allowlist` is `@childcarewow.com,@ccw.test`. Allowlisted-recipient tests were silently hitting the BLOCKED branch. Fix: extend the allowlist locally via `@SpringBootTest(properties = "notifications.email.dev-allowlist=...,@ccw-demo.test,...")`. Documented inline.
+- **Postgres `max_connections=100` exhaustion** when the orchestrator IT's `@MockBean`-busted context runs alongside `OpenApiSnapshotIT`'s separately-busted context + the cached default context. Added `@DirtiesContext(classMode = AFTER_CLASS)` so the orchestrator IT releases its 20-slot Hikari calendar pool the moment the class finishes. Documented inline. **New cheat-sheet entry:** "If an IT busts the Spring context cache (via `@MockBean` or unique `@SpringBootTest(properties=...)`), add `@DirtiesContext(AFTER_CLASS)` to release the Hikari pool. Postgres `max_connections=100` and 4 contexts × 25 connections = boom."
+- **Email channel routing was a judgment call.** `EVENT_INVITE/UPDATED/CANCELLED + TASK_OVERDUE` get email; other task kinds don't. The reasoning is in the orchestrator's javadoc — task status flips are too frequent to email. Future Part 12.x can lift this to a per-user notification preference table. The decision is reversible (one line in `EMAIL_KINDS` set).
+- **The orchestrator is dormant.** No production code calls `dispatch(...)` yet. The wire-up trigger is the next sub-Part — could be synchronous from `NotificationService` (simplest, but holds tx locks during SMTP), `@TransactionalEventListener(AFTER_COMMIT)` (clean separation), or a periodic poller scanning notifications without corresponding deliveries (most robust, also lets retry orchestration use the same scanner).
+- **APP channel writes a delivery row even though there's no actual "send."** The audit value: a `notification_deliveries` row per recipient × channel makes the operator dashboard uniform (count of SENT/FAILED/PAUSED across all channels). Otherwise APP would be invisible to the audit log.
+
+### Carry-forward (one new, mostly unchanged)
+
+- All previously-open carry-forwards remain.
+- **NEW (this Part deferred):** orchestrator wire-up. The composition primitive exists; the trigger doesn't. Operator decides between sync-after-write, after-commit event listener, or periodic scanner.
+- The "real dispatch on holiday-resume" carry-forward from 11.7/11.8 is now *unblocked* — once the orchestrator is wired in, the holiday-resume job's unpause can be followed by `orchestrator.dispatch(unpausedId)`.
+
+Next part: **operator decision.** Three orthogonal directions:
+1. **Wire the orchestrator into `NotificationService`** (likely via `@TransactionalEventListener(AFTER_COMMIT)`).
+2. **N+1 perf fix in `EventService.toViewWithJoins`** (the carry-forward from `docs/perf/7-calendar-benchmark.md`).
+3. **Retry orchestration** — scheduler that scans FAILED deliveries with `attempt_count < MAX_ATTEMPTS` and re-dispatches with backoff.
+
+---
+
 ## Part 11.9 (Series 11) — Parent calendar visibility QA (doc + cross-cutting IT) — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat
