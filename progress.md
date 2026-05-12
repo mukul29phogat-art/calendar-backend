@@ -29,6 +29,57 @@ Next part: X.Y+1
 
 ---
 
+## Part 9.4 (Series 9) — `PUT /api/v1/tasks/{id}/series` — THIS_AND_FOLLOWING — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`THIS_AND_FOLLOWING` branch in `TaskService.applySeriesEdit`** — the surgical recurring-task split (architecture spec §6.2 update flow):
+  1. **First-occurrence collapse check** — `occurrenceDate == master.dueDate` → reject with `ValidationException("ENTIRE_SERIES")` (Part 9.5 will fall through to the ENTIRE_SERIES handler).
+  2. **Required-field validation** — `title`, `status`, `priority` must all be present (the new task is a real task and needs these the same way `CreateTaskRequest` does).
+  3. **Hard holiday block** on `occurrenceDate` — same rule as create. Reuses `findApprovedHolidayName(schoolId, date)`.
+  4. **Shorten master rule** via `recurrenceService.shortenUntil(masterRuleId, occurrenceDate.minusDays(1))`. (`shortenUntil` from Part 3.6 rejects an extend — no risk of accidentally lengthening.)
+  5. **Drop overrides at/after split** via `recurrenceService.removeOverridesFromDate(masterId, occurrenceDate)` — the master rule no longer covers those dates, so the override rows would be orphaned.
+  6. **Create the new task** at `occurrenceDate` with its own recurrence rule (per D9 — independent rule even though same group_id). Description and assignee carry forward from master if request doesn't specify; title/status/priority/dueTime come from the request.
+  7. **Recompute soft flags + dispatch `TASK_CREATED`** for the new task — same post-create cross-cutting as the regular create flow.
+- **Extended `TaskSeriesEditRequest` DTO** — added `description`, `priority`, `recurrence` fields. Back-compat constructor preserves Part 9.3's six-arg call sites for JUST_THIS callers.
+- **Refactored `applySeriesEdit`** — single dispatch on `req.choice()` into private helpers `applyJustThis` / `applyThisAndFollowing`. Method bodies stay short.
+
+Files changed (count: 5; 1 new test, 1 modified 9.3 IT, 2 modified, 1 progress):
+- `src/main/java/com/childcarewow/calendar/task/TaskSeriesEditRequest.java` — added 3 fields + back-compat ctor.
+- `src/main/java/com/childcarewow/calendar/task/TaskService.java` — refactored to dispatch on choice; added `applyThisAndFollowing` private helper.
+- `src/test/java/com/childcarewow/calendar/task/TaskSeriesEditJustThisIT.java` — dropped `thisAndFollowingRejectedUntilPart9_4` (the contract it pinned is now obsolete).
+- `src/test/java/com/childcarewow/calendar/task/TaskSeriesEditThisAndFollowingIT.java` — new (5 ITs).
+- `docs/openapi.json` — regenerated for the expanded request shape.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m49s. **288 tests** (was 284), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `TaskSeriesEditThisAndFollowingIT` — 5/5 green:
+  - **`shortenMasterRuleAndCreateNewTaskAtSplit`** — DAILY task with rule until 2027-08-31; split at 2027-08-10 → master's `until_date` becomes 2027-08-09, a new task appears at 2027-08-10 with its own recurrence_id (≠ master's), `parent_task_group_id` shared with master (both null in this single-assignee case — correct per Part 9.2).
+  - **`splitDropsOverridesAtOrAfterSplitDate`** — seed two JUST_THIS overrides (Aug 5 and Aug 12); after split at Aug 10, the Aug-5 override survives, the Aug-12 override is gone.
+  - **`firstOccurrenceCollapseRejectedUntilPart9_5`** — `occurrenceDate == master.dueDate` → `ValidationException("ENTIRE_SERIES")`.
+  - **`holidayOnSplitDateRejected`** — approved CUSTOM holiday seeded on the split date → `TaskOnHolidayException` (same envelope as create).
+  - **`missingTitleRejected`** — null title → `ValidationException("title")`.
+- [x] `TaskSeriesEditJustThisIT` still 7/7 green (was 8 before dropping the now-obsolete rejection test).
+- [x] All Series 6/7/8 ITs unchanged and green.
+- [x] OpenAPI snapshot regenerated for the wider request shape.
+
+Notes / surprises:
+- **Single-assignee → single-assignee — multi-assignee group editing on this path is not supported.** The FE's `TaskUpdateInput` is single-assignee shaped (`assigneeUserId: ID`, not `assigneeUserIds: ID[]`), and the playbook spec doesn't ask for multi-assignee on the series edit. The new task inherits `assigneeUserId` from master verbatim — there is no path to change it on the split. Documented as a non-feature here; can be added in a later Part if product wants it.
+- **`parent_task_group_id` carries forward to the new task.** Per the architecture spec, the split task is "another row in the same fan-out group" so users see them as related. In the test, master + new task both have `group_id = null` (because the original master was single-assignee from 9.1) — the test still asserts they're equal, just to pin the carry-forward rule. If a multi-assignee task is split, the new row would get the same non-null group_id; only one assignee's row is split (single-row PUT, not group-wide).
+- **Master gets `updatedByUserId` even though its other fields are unchanged.** Just stamps "Olivia touched this row at this time"; useful for audit cross-referencing.
+- **Override-drop is `>=` not `>`.** The spec says "delete `task_instance_overrides` from `occurrenceDate` onwards." So Aug-10 itself (the split day) IS dropped; it's the FIRST occurrence of the new task, not the LAST occurrence of the old. `removeOverridesFromDate` already does `>=`, matching this.
+- **`TaskSeriesEditRequest`'s back-compat constructor needed for the 9.3 IT call sites.** Adding the 3 new fields to the canonical record would have broken every 9.3 caller's 6-arg invocation. The compact-target ctor keeps them compiling unchanged.
+
+### Carry-forward (no change beyond 9.3's)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 9.5 — `PUT /api/v1/tasks/{id}/series` ENTIRE_SERIES.** Update master + its rule in place. Special case: when the `occurrenceDate == master.dueDate` collapse hits ENTIRE_SERIES (the 9.4 collapse-rejection above will fall through once 9.5 lands). Holiday block on `dueDate` if it changed.
+
+---
+
 ## Part 9.3 (Series 9) — `PUT /api/v1/tasks/{id}/series` — JUST_THIS — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat

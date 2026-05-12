@@ -289,15 +289,24 @@ public class TaskService {
     if (task.getRecurrenceId() == null) {
       throw new ValidationException("recurrence", "task is not recurring");
     }
-    if (req.choice() == EditChoice.THIS_AND_FOLLOWING) {
-      throw new ValidationException("choice", "THIS_AND_FOLLOWING lands in Part 9.4");
-    }
     if (req.choice() == EditChoice.ENTIRE_SERIES) {
       throw new ValidationException("choice", "ENTIRE_SERIES lands in Part 9.5");
     }
 
-    // JUST_THIS: occurrenceDate must be a date the rule actually produces. Use a single-day
-    // expansion window — if the rule emits it, the override is valid.
+    if (req.choice() == EditChoice.JUST_THIS) {
+      return applyJustThis(task, req, actor);
+    }
+    return applyThisAndFollowing(task, req, actor);
+  }
+
+  /**
+   * JUST_THIS handler — upsert a single-occurrence override. Master task untouched apart from
+   * {@code updatedByUserId}. Per the FE prototype, this branch does NOT dispatch notifications and
+   * does NOT recompute soft flags (overrides are scoped to a single occurrence).
+   */
+  private TaskView applyJustThis(Task task, TaskSeriesEditRequest req, UserPrincipal actor) {
+    // occurrenceDate must be a date the rule actually produces. Use a single-day expansion
+    // window — if the rule emits it, the override is valid.
     com.childcarewow.calendar.recurrence.ExpansionResult exp =
         recurrenceService.expand(task, req.occurrenceDate(), req.occurrenceDate());
     if (!exp.occurrences().contains(req.occurrenceDate())) {
@@ -306,7 +315,7 @@ public class TaskService {
     }
 
     TaskInstanceOverride incoming = new TaskInstanceOverride();
-    incoming.setTaskId(id);
+    incoming.setTaskId(task.getId());
     incoming.setOccurrenceDate(req.occurrenceDate());
     incoming.setTitle(req.title());
     incoming.setDueTime(req.dueTime());
@@ -318,6 +327,90 @@ public class TaskService {
     taskRepo.saveAndFlush(task);
 
     return TaskView.fromEntity(task);
+  }
+
+  /**
+   * THIS_AND_FOLLOWING handler (Part 9.4) — shortens the master rule's {@code until_date} to the
+   * day before {@code occurrenceDate}, drops any overrides at/after the split, and creates a new
+   * task at {@code occurrenceDate} carrying the user's edit payload + a fresh recurrence rule (per
+   * D9 the new task gets its own rule even though it shares {@code parent_task_group_id} with the
+   * master). Returns the new task's view.
+   *
+   * <p><b>Holiday block</b> applies to {@code occurrenceDate} — same hard-rule as task creation.
+   * <b>First-occurrence collapse:</b> when {@code occurrenceDate == master.dueDate}, the operation
+   * is equivalent to ENTIRE_SERIES, which Part 9.5 implements — until then, reject with a clear
+   * "use ENTIRE_SERIES" message so the FE can pivot.
+   */
+  private TaskView applyThisAndFollowing(
+      Task master, TaskSeriesEditRequest req, UserPrincipal actor) {
+    if (req.occurrenceDate().equals(master.getDueDate())) {
+      // Architecture spec §6.2: first-occurrence THIS_AND_FOLLOWING collapses to ENTIRE_SERIES.
+      // Until Part 9.5 lands, surface this explicitly so the FE can re-dispatch.
+      throw new ValidationException(
+          "occurrenceDate",
+          "first-occurrence THIS_AND_FOLLOWING collapses to ENTIRE_SERIES (Part 9.5)");
+    }
+    if (req.title() == null || req.title().isBlank()) {
+      throw new ValidationException("title", "title is required for THIS_AND_FOLLOWING");
+    }
+    if (req.status() == null) {
+      throw new ValidationException("status", "status is required for THIS_AND_FOLLOWING");
+    }
+    if (req.priority() == null) {
+      throw new ValidationException("priority", "priority is required for THIS_AND_FOLLOWING");
+    }
+
+    // Hard-block: occurrenceDate cannot fall on an approved holiday. Same rule as create.
+    String holidayName = findApprovedHolidayName(master.getSchoolId(), req.occurrenceDate());
+    if (holidayName != null) {
+      throw new TaskOnHolidayException(holidayName);
+    }
+
+    // 1. Shorten master rule to the day before the split. (Part 3.6: shortenUntil rejects an
+    // extend.)
+    recurrenceService.shortenUntil(master.getRecurrenceId(), req.occurrenceDate().minusDays(1));
+
+    // 2. Drop overrides at/after the split date — they belong to the post-split window which the
+    // master rule no longer covers.
+    recurrenceService.removeOverridesFromDate(master.getId(), req.occurrenceDate());
+
+    // 3. Build the new task. Per D9, it gets its OWN recurrence rule (independent of master).
+    UUID newRuleId = null;
+    if (req.recurrence() != null) {
+      RecurrenceRule rule = buildRule(req.recurrence());
+      RecurrenceRule persistedRule = recurrenceService.create(rule, req.occurrenceDate());
+      newRuleId = persistedRule.getId();
+    }
+
+    Task newTask = new Task();
+    newTask.setOrgId(master.getOrgId());
+    newTask.setSchoolId(master.getSchoolId());
+    newTask.setClassroomId(master.getClassroomId());
+    newTask.setTitle(req.title());
+    newTask.setDescription(req.description() != null ? req.description() : master.getDescription());
+    newTask.setAssigneeUserId(master.getAssigneeUserId());
+    newTask.setDueDate(req.occurrenceDate());
+    newTask.setDueTime(req.dueTime());
+    newTask.setStatus(req.status());
+    newTask.setPriority(req.priority());
+    // Per architecture spec §6.2, the new task shares parent_task_group_id with master so the
+    // fan-out group (Part 8.2) stays coherent. May be null if master was single-assignee — that's
+    // fine (orthogonal to recurrence_id).
+    newTask.setParentTaskGroupId(master.getParentTaskGroupId());
+    newTask.setRecurrenceId(newRuleId);
+    newTask.setCreatedByUserId(actor.id());
+
+    Task persisted = taskRepo.saveAndFlush(newTask);
+    em.refresh(persisted);
+
+    // Master may also need the actor-stamp update.
+    master.setUpdatedByUserId(actor.id());
+    taskRepo.saveAndFlush(master);
+
+    softFlagService.recomputeForTask(persisted.getId());
+    notificationService.dispatchTaskCreated(persisted);
+
+    return TaskView.fromEntity(persisted);
   }
 
   /**

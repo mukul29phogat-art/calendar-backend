@@ -1035,6 +1035,9 @@
           "title" : {
             "type" : "string"
           },
+          "description" : {
+            "type" : "string"
+          },
           "dueTime" : {
             "$ref" : "#/components/schemas/LocalTime"
           },
@@ -1042,8 +1045,15 @@
             "type" : "string",
             "enum" : [ "TODO", "IN_PROGRESS", "DONE" ]
           },
+          "priority" : {
+            "type" : "string",
+            "enum" : [ "LOW", "MEDIUM", "HIGH" ]
+          },
           "skipped" : {
             "type" : "boolean"
+          },
+          "recurrence" : {
+            "$ref" : "#/components/schemas/RecurrenceSpec"
           }
         }
       },
