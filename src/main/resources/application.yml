@@ -12,9 +12,34 @@ management:
     health:
       show-details: always
 
+notifications:
+  email:
+    # Part 11.4 — global kill-switch for outbound email. Dev/staging default true; flip to false
+    # in CI or for emergency lockdowns. Tests pin behavior via @TestPropertySource.
+    enabled: true
+    # Dev allowlist (architecture spec §7.4): outbound mail to any address NOT ending in one of
+    # these suffixes is dropped with BLOCKED_BY_ALLOWLIST. Empty list in prod (permits all).
+    dev-allowlist:
+      - "@childcarewow.com"
+      - "@ccw.test"
+
 spring:
   application:
     name: calendar-backend
+  # SMTP relay (architecture spec §7.4). Real creds come from AWS Secrets Manager via Spring
+  # Cloud AWS in Series 11 deploys. The localhost placeholder keeps the JavaMailSender bean
+  # auto-configurable in dev; un-allowlisted recipients are blocked BEFORE SMTP is touched.
+  mail:
+    host: ${SPRING_MAIL_HOST:localhost}
+    port: ${SPRING_MAIL_PORT:25}
+    username: ${SPRING_MAIL_USERNAME:}
+    password: ${SPRING_MAIL_PASSWORD:}
+    properties:
+      mail:
+        smtp:
+          auth: ${SPRING_MAIL_SMTP_AUTH:false}
+          starttls:
+            enable: ${SPRING_MAIL_SMTP_STARTTLS:false}
   servlet:
     multipart:
       max-request-size: 11MB # 1MB headroom over the 10MB attachment limit

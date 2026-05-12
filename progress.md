@@ -29,6 +29,55 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.4 (Series 11) — Email dispatcher (JavaMailSender + dev allowlist) — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`spring-boot-starter-mail` dep** added to `pom.xml`. Brings `JavaMailSender` + jakarta-mail under autoconfig.
+- **`EmailDispatcher`** — the lowest-level email-send primitive. `send(toAddress, subject, body)` returns a `DispatchResult` enum: `SENT` / `DISABLED` / `BLOCKED_BY_ALLOWLIST` / `FAILED`. Doesn't decide WHEN to dispatch (that's upstream — Part 11.7's deliveries-row scanner) and doesn't write to the calendar DB. Pure send primitive.
+- **Dev allowlist gate** — runs in code, BEFORE SMTP is touched. Empty list = permit-all (prod default); non-empty list = recipient must end with one of the suffixes. Case-insensitive comparison so `@CCW.TEST` config matches `@ccw.test` profile emails. **Architecture spec §7.4 mandates the allowlist live in dispatcher code, not as ops-firewall config.** Playbook's reasoning: an accidentally-promoted dev config that points at prod SMTP could blast users; the in-code gate is the canonical line of defense, ops firewall is belt-and-braces.
+- **`EmailDispatcherProperties` record** — `@ConfigurationProperties("notifications.email")` with `enabled: boolean` and `devAllowlist: List<String>`. Null list coalesces to empty so unset config doesn't NPE.
+- **`application.yml` config** — `notifications.email.{enabled, dev-allowlist}` + `spring.mail.*` keys backed by env vars (`SPRING_MAIL_HOST`, etc.) with safe defaults (`localhost:25`, no auth). Real SMTP creds plug in via Series-11 deploy with AWS Secrets Manager.
+- **`MailException` + `jakarta.mail.MessagingException` both caught** in the send path. Both surface as `FAILED`; the dispatcher logs but never propagates so upstream (Part 11.7's delivery-row updater) can stamp the result cleanly without try/catch.
+- **HTML body via `MimeMessageHelper`** — `setText(body, true)` flags HTML. Series 11.5 will plug Thymeleaf templates in for per-kind bodies; this Part takes plain HTML strings.
+
+Files changed (count: 5; 1 modified pom, 1 modified yml, 2 new prod, 1 new test, 1 progress):
+- `pom.xml` — `+spring-boot-starter-mail`.
+- `src/main/resources/application.yml` — `+notifications.email.*` + `+spring.mail.*` envvar-backed defaults.
+- `src/main/java/com/childcarewow/calendar/notification/EmailDispatcherProperties.java` — new.
+- `src/main/java/com/childcarewow/calendar/notification/EmailDispatcher.java` — new.
+- `src/test/java/com/childcarewow/calendar/notification/EmailDispatcherTest.java` — new (7 unit tests).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 3m27s. **332 tests** (was 325), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `EmailDispatcherTest` — 7/7 green:
+  - **`allowlistedRecipientGetsSent`** — `alice@ccw.test` matches `@ccw.test` allowlist → `JavaMailSender.send` invoked once → `SENT`.
+  - **`nonAllowlistedRecipientIsBlockedAndSmtpUntouched`** — `stranger@external.example` → `BLOCKED_BY_ALLOWLIST`; mock `JavaMailSender` neither created MimeMessage nor was send-called.
+  - **`emptyAllowlistPermitsAllRecipients`** — prod default; empty list → every recipient sent.
+  - **`disabledFlagShortCircuitsBeforeSmtp`** — `enabled=false` returns `DISABLED` without touching JavaMailSender.
+  - **`smtpFailureReturnsFailedNotThrown`** — mock throws `MailSendException("SMTP server down")` → dispatcher catches, returns `FAILED`. Confirms the no-throw contract.
+  - **`caseInsensitiveAllowlistMatch`** — `@CCW.TEST` allowlist matches `Alice@ccw.test` recipient.
+  - **`nullRecipientBlocked`** — null `toAddress` → `BLOCKED_BY_ALLOWLIST`; SMTP untouched.
+
+Notes / surprises:
+- **Pure unit test, no SpringBootTest.** `EmailDispatcherTest` constructs the dispatcher directly with a Mockito-mocked `JavaMailSender` + a hand-built `EmailDispatcherProperties` record. Fastest test cost in the suite; doesn't need the calendar/platform DBs to spin up. The Spring context already verifies the autowiring path (the `@Configuration` inner class registers `EmailDispatcherProperties` via `@EnableConfigurationProperties`).
+- **`@Configuration static class Config` inside `EmailDispatcher`** — Spring 6 lets us nest the `@EnableConfigurationProperties` registration inside the service class. Keeps the dispatcher self-contained without a top-level `Config` class. Verified by the existing context-load tests (every other class that wired up correctly still does).
+- **`JavaMailSender` autoconfig requires `spring.mail.host`** — empty config would skip the bean and break this service's autowire. Set a `localhost` default so the bean exists in dev/test even without real SMTP; un-allowlisted recipients are gated BEFORE SMTP is touched anyway.
+- **`MailException` (Spring) vs `MessagingException` (jakarta-mail)** — multi-catch both. The Spring layer wraps most jakarta exceptions but `MimeMessageHelper` can throw `MessagingException` directly (e.g. malformed address). Tests pin only `MailSendException`; the jakarta branch is conservative but checked-exception type forces us to declare or handle it.
+- **`@ConfigurationProperties` on a record + `devAllowlist()` accessor with null-coalesce** — records define an implicit canonical accessor for every component; overriding it (e.g. for null-coalesce) is legal as long as the signature matches. The implicit field still exists in storage; the accessor just intercepts reads. Confirmed by the tests calling `props.devAllowlist()` and getting the non-null behavior.
+- **No upstream wire-up YET.** Nothing calls `EmailDispatcher.send` in this Part. The wire-up lands in 11.7 (deliveries-row scanner) + 11.8 (holiday-aware suppression resume). 11.5 (templates) sits in between and is the natural next chunk — it adds `EmailRenderer` that takes a `NotificationKind` + payload and returns `(subject, htmlBody)` that the dispatcher consumes.
+
+### Carry-forward (no change)
+
+- All previously-open carry-forwards remain.
+- **NEW: real SMTP wiring deferred to Series 11 deploy.** When the operator stands up SES (or Mailgun / Mailtrap dev sandbox), set `SPRING_MAIL_{HOST,PORT,USERNAME,PASSWORD}` from AWS Secrets Manager. The dev allowlist stays in `application.yml`; the SMTP creds come from secrets.
+
+Next part: **Part 11.5 — Email templates.** Thymeleaf or `String.format`-shaped renderers per `NotificationKind`. Output is `(subject, htmlBody)` consumed by `EmailDispatcher.send`. Tests: render each template with sample data + HTML-escape user content.
+
+---
+
 ## Part 11.3 (Series 11) — `POST /api/v1/notifications/{id}/read` + `/read-all` — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat
