@@ -29,6 +29,57 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.7 (Series 11) — `notification_deliveries` audit — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+**Order note:** Took 11.7 out-of-sequence ahead of 11.6 (push dispatcher) because 11.6 is operator-blocked on a Firebase test FCM token + the service-account JSON wire-up. 11.7's audit layer is upstream-channel-agnostic (works for EMAIL today, will work for PUSH when 11.6 lands) so building it first doesn't create rework. The deps chain shown in the playbook (11.5 → 11.6 → 11.7) is the originally-imagined dispatch flow; the actual data flow only requires that 11.7 sees a dispatcher result, not which dispatcher produced it.
+
+What got built:
+- **`NotificationDeliveryService`** — audit log writer over the V7 `notification_deliveries` table. Three primary methods:
+  - `recordSent(notifId, recipientId, channel, attempt)` — inserts SENT row with `sent_at = now()`.
+  - `recordFailed(notifId, recipientId, channel, attempt, error)` — inserts FAILED row with `last_error` populated.
+  - `recordPaused(notifId, recipientId, channel, attempt, reason)` — inserts PAUSED row (allowlist block, holiday pause, etc.) with the reason in `last_error`.
+- **Retry semantics:** `MAX_ATTEMPTS=3` constant + static `shouldRetry(attempt)` helper. Caller tracks the attempt count; the service doesn't auto-increment because each audit row reflects ONE attempt with that specific count.
+- **`last_error` truncated at 2048 chars** to prevent runaway SMTP/FCM error messages from bloating the audit log.
+- **Audit-first design, not queue-first.** The V7 schema's `QUEUED` status + `scheduled_at` field could power a poll-based queue model, but Part 11.7 only needs the per-attempt audit log. The QUEUED-as-queue path is reserved for a future sub-Part (or a deliveries-fed scheduler that wraps 11.4/11.5/11.6).
+- **Repository additions:**
+  - `findByNotificationIdOrderByCreatedAtDesc(UUID)` — audit query for tests + dashboards.
+  - `countByStatus(DeliveryStatus)` — health-check / dashboard surface.
+
+Files changed (count: 4; 1 modified repo, 1 new service, 1 new test, 1 progress):
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDeliveryRepository.java` — `+findByNotificationIdOrderByCreatedAtDesc`, `+countByStatus`.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDeliveryService.java` — new.
+- `src/test/java/com/childcarewow/calendar/notification/NotificationDeliveryServiceIT.java` — new (7 real-DB ITs).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 3m00s. **345 tests** (was 338), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `NotificationDeliveryServiceIT` — 7/7 green:
+  - **`recordSentInsertsRowWithSentAtPopulated`** — SENT row carries `sent_at` non-null + `attempt_count=1` + null `last_error`.
+  - **`recordFailedPersistsLastError`** — FAILED row with `last_error="SMTP timeout after 30s"`, `sent_at` null.
+  - **`recordPausedPersistsReasonInLastError`** — PAUSED row stamps reason in `last_error` for inline operator inspection.
+  - **`findByNotificationIdReturnsAllRowsNewestFirst`** — three audits (FAILED→FAILED→SENT) returned newest-first.
+  - **`countByStatusReflectsPersistedRows`** — delta-based; counts go up by exactly the number of FAILED rows recorded in the test.
+  - **`shouldRetryReturnsTrueBelowMaxFalseAtAndAbove`** — static helper: 1✅ 2✅ 3❌ 4❌.
+  - **`longErrorMessagesAreTruncatedNotPropagatedRaw`** — 5000-char input → 2048-char `last_error`.
+
+Notes / surprises:
+- **No automatic retry orchestration** in this Part. The playbook step 2 says "Failed delivery logic: retry with backoff (max 3 attempts)", but a synchronous attempt-with-backoff loop would block the request thread; an async scheduler is more correct. Deferred to either a Part 11.8 follow-up (the holiday-suppression-resume job already lives in that scheduler slot) or a separate hardening Part. The audit + `shouldRetry` helper are in place so the orchestration layer is one method away.
+- **`scheduled_at` is set to `now()`** in every record call. The column is NOT NULL with no default in the V7 schema, so we set it at the persistence layer. For a future queue-mode scheduler, callers would override with a future timestamp; the field's name reflects that intent even though Part 11.7 doesn't use it for scheduling.
+- **No wire-up to `NotificationService`** in this Part. The existing notification writes (event invite, task assigned, etc.) don't yet record deliveries. That's the wire-up step — pure plumbing once an upstream dispatcher (11.4 + 11.6) is composed with this audit layer in a "compose dispatch + record" facade. Deferred to a follow-up.
+- **`countByStatus` derived from `JpaRepository.count`-style derived queries** — Spring Data generates `SELECT COUNT(*) FROM notification_deliveries WHERE status = ?` from the method name. No custom @Query needed.
+- **No PUSH channel exercised yet** — `recordSent(notifId, recipientId, DeliveryChannel.PUSH, 1)` is a legal call but no test goes that route because 11.6 isn't built. The `channel` column is just a string discriminator at the DB level; the service treats EMAIL / APP / PUSH uniformly.
+
+### Carry-forward (no change beyond Series 9/10)
+
+- All previously-open carry-forwards remain.
+- **NEW: retry orchestration for failed deliveries** deferred. Architecture spec implies retry-with-backoff (max 3 attempts), and `shouldRetry` is in place, but no scheduler actually invokes it. Tracked as a Series-12 polish item.
+
+Next part: **Part 11.6 — Push dispatcher (Firebase Admin SDK).** Operator partially blocks this: the Firebase service-account JSON from `childcarewow-calendar/dev/firebase-service-account` is needed at construction. The dispatcher itself can be built + unit-tested against a mocked `FirebaseMessaging` like 11.4 did with `JavaMailSender`. The live-fire test to a real FCM token is operator-only.
+
+---
+
 ## Part 11.5 (Series 11) — Email templates per `NotificationKind` — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat
