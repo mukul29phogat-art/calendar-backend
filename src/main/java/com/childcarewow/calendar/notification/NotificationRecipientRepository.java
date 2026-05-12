@@ -13,4 +13,7 @@ public interface NotificationRecipientRepository
 
   /** Batched recipient lookup for multiple notifications in one query. */
   List<NotificationRecipient> findByNotificationIdIn(Collection<UUID> notificationIds);
+
+  /** Existence check for a specific (notification, user) pair. Backs the read-mark policy gate. */
+  boolean existsByNotificationIdAndUserId(UUID notificationId, UUID userId);
 }

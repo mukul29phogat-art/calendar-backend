@@ -416,6 +416,37 @@
         }
       }
     },
+    "/api/v1/notifications/{id}/read" : {
+      "post" : {
+        "tags" : [ "notification-controller" ],
+        "operationId" : "markRead",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "responses" : {
+          "200" : {
+            "description" : "OK"
+          }
+        }
+      }
+    },
+    "/api/v1/notifications/read-all" : {
+      "post" : {
+        "tags" : [ "notification-controller" ],
+        "operationId" : "markAllRead",
+        "responses" : {
+          "200" : {
+            "description" : "OK"
+          }
+        }
+      }
+    },
     "/api/v1/important-dates" : {
       "get" : {
         "tags" : [ "important-date-controller" ],
