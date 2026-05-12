@@ -195,26 +195,6 @@ class TaskSeriesEditJustThisIT {
   }
 
   @Test
-  void thisAndFollowingRejectedUntilPart9_4() {
-    UUID taskId = createDailyRecurringTask("IT-tseje-taf", LocalDate.of(2027, 8, 2));
-
-    assertThatThrownBy(
-            () ->
-                taskService.applySeriesEdit(
-                    taskId,
-                    new TaskSeriesEditRequest(
-                        EditChoice.THIS_AND_FOLLOWING,
-                        LocalDate.of(2027, 8, 5),
-                        null,
-                        null,
-                        null,
-                        false),
-                    admin()))
-        .isInstanceOf(ValidationException.class)
-        .hasMessageContaining("Part 9.4");
-  }
-
-  @Test
   void entireSeriesRejectedUntilPart9_5() {
     UUID taskId = createDailyRecurringTask("IT-tseje-es", LocalDate.of(2027, 8, 2));
 
