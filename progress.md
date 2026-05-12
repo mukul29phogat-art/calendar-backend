@@ -29,6 +29,48 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.5 (Series 11) — Email templates per `NotificationKind` — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`EmailContent` record** — `(subject, htmlBody)`. The output shape `EmailDispatcher.send` consumes.
+- **`EmailRenderer.render(Notification)`** — switch over all 8 `NotificationKind` values, returns the rendered subject + body pair. Plain `String.format`-style template literals; no Thymeleaf dep added (the playbook offered either; 8 small templates don't justify pulling in another starter).
+- **`HtmlUtils.htmlEscape` on every user-supplied substitution** (`relatedEntityTitle`, `message`). The wrapper HTML (the `<!DOCTYPE>`, `<h2>`, `<strong>`, `<em>` tags) is hand-authored and escaping it would be wrong; only the substituted values get escaped. Playbook common-failure-point pinned: XSS via event title containing `<script>alert('xss')</script>` is now safe.
+- **Per-kind subject + body templates** — all eight kinds, each with `<h2>Headline</h2>`, `<p><strong>{title}</strong></p>`, `<p>{message}</p>`, and a shared signature footer `— ChildcareWow School Operations`.
+- **Subject is plain text**, NOT HTML-escaped. Email clients render the subject as text in their UI so escape characters would surface verbatim. Body is HTML and IS escaped.
+- **Null-safe substitutions** — `null` title or message coalesces to empty string. Test pins the "new task assigned: " (trailing space, no title) edge case.
+
+Files changed (count: 4; 3 new, 1 progress):
+- `src/main/java/com/childcarewow/calendar/notification/EmailContent.java` — new.
+- `src/main/java/com/childcarewow/calendar/notification/EmailRenderer.java` — new.
+- `src/test/java/com/childcarewow/calendar/notification/EmailRendererTest.java` — new (6 unit tests).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m46s. **338 tests** (was 332), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `EmailRendererTest` — 6/6 green:
+  - **`eventInviteRendersTitleInSubjectAndBody`** — sample `(EVENT_INVITE, "Spring Concert", "Tonight 7pm")` renders the expected subject and body fragments.
+  - **`htmlInTitleIsEscapedInBodyButRawInSubject`** — `<script>alert('xss')</script>` in title: body contains `&lt;script&gt;` (escaped); body does NOT contain `<script>alert`; subject IS the raw title (plain-text rendering).
+  - **`allEightKindsRenderWithoutNpe`** — every `NotificationKind` value produces a non-empty subject + well-formed HTML body.
+  - **`nullTitleAndMessageFallToEmptyStrings`** — null inputs → `"New task assigned: "` (trailing space) subject + empty `<strong></strong>` in body. No NPE.
+  - **`ampersandInTitleIsEscaped`** — `Salt & Pepper` → `Salt &amp; Pepper` in body; raw `Salt & Pepper<` doesn't appear in body.
+  - **`wrapperSignatureLineAppears`** — every email ends with the `— ChildcareWow School Operations` footer.
+
+Notes / surprises:
+- **No Thymeleaf for now.** With 8 nearly-identical templates and short bodies, the savings from a template engine don't justify the dep + the file-resource load. If templates grow (multi-paragraph, conditional sections, i18n), revisit. The `EmailRenderer` shape is mechanical enough that a Thymeleaf swap-in would be one-method changes per kind.
+- **Plain-text alternative (`text/plain` MIME) not generated.** `EmailContent` carries only `htmlBody`. The `MimeMessageHelper.setText(html, true)` call in `EmailDispatcher` sends HTML-only. Most modern email clients handle HTML fine; if accessibility / plain-text fallback becomes a requirement, add a second field to `EmailContent` and an `addPart` call in the dispatcher. Tracked as a Series-12 polish item.
+- **Subject escaping is intentional**, not an oversight. Email subject lines are plain text — most email clients render `<` and `>` as literal characters, but if an upstream tool (a webmail preview) treated subject as HTML, the user would see entities instead of the original. Better to send the literal subject; the danger of HTML-in-subject is a downstream XSS vector that no FE bell exposes today.
+- **Apostrophe escaping caught a test gotcha** — `HtmlUtils.htmlEscape` turns `'` into `&#39;` (not `&apos;`). The original test had `.or(...)` for both forms but AssertJ's `StringAssert.or()` doesn't exist; simplified to `doesNotContain("<em>do</em>")` which is the actual invariant we care about.
+
+### Carry-forward (no change)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 11.6 — Push dispatcher (Firebase Admin SDK).** Operator-blocked: needs the Firebase service-account JSON from LocalStack secret `childcarewow-calendar/dev/firebase-service-account` (set up in P0.3) loaded at dispatcher construction. Can be partially built with a mocked `FirebaseMessaging` like 11.4 did with `JavaMailSender`, but the live-fire push-to-test-token verification needs the operator's FCM token in `infrastructure/test-fcm-token.txt`. Alternative: tackle **Part 11.7 (`notification_deliveries` audit)** which is the wire-up layer that consumes 11.4/11.5/11.6 — pure backend work, no external dependency.
+
+---
+
 ## Part 11.4 (Series 11) — Email dispatcher (JavaMailSender + dev allowlist) — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat
