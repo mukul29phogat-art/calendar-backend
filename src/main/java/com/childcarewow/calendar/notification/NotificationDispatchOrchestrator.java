@@ -10,6 +10,7 @@ import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Propagation;
 import org.springframework.transaction.annotation.Transactional;
 
 /**
@@ -100,8 +101,15 @@ public class NotificationDispatchOrchestrator {
    *
    * <p>Each delivery is attempt #1 (the audit-layer {@code shouldRetry} semantics from Part 11.7
    * apply to the caller's retry loop, not this single dispatch).
+   *
+   * <p><b>{@code REQUIRES_NEW}.</b> The orchestrator is invoked from {@code
+   * NotificationDispatchListener} on the AFTER_COMMIT phase of an event-listener thread. Spring's
+   * OSIV pattern keeps an EntityManager bound to that thread without an active transaction; a plain
+   * {@code @Transactional} would inherit that bound session and the next {@code saveAndFlush} would
+   * throw {@code TransactionRequiredException}. Forcing {@code REQUIRES_NEW} detaches the
+   * listener-thread session and runs the audit-row writes in a fresh tx.
    */
-  @Transactional
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
   public DispatchSummary dispatch(UUID notificationId) {
     Notification n =
         notificationRepo

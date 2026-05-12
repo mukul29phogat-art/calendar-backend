@@ -29,6 +29,54 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.x+1 (Series 11) — Orchestrator wire-up via `@TransactionalEventListener(AFTER_COMMIT)` — STATUS: ✅ done
+
+**Off-playbook continuation.** Flips the orchestrator from "dormant primitive" to "live in production" by wiring `NotificationService` → Spring event → AFTER_COMMIT listener → `NotificationDispatchOrchestrator.dispatch`. After this Part, every successful event/task notification write triggers real delivery audit rows (and would trigger real email if SMTP creds were live).
+
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`NotificationCreatedEvent` record** — Spring application event carrying just the notification id. The listener re-loads from DB so it always sees committed state.
+- **`NotificationService` publishes the event** at the end of both writer paths (`writeWithRecipients` for events, `writeTaskNotification` for tasks). Empty-recipient early returns naturally skip the publish (no notification row, no event).
+- **`NotificationDispatchListener`** — `@TransactionalEventListener(phase = AFTER_COMMIT)`. Subscribes to `NotificationCreatedEvent`, calls `orchestrator.dispatch(notificationId)`. Wraps in try/catch — listener failures log + return without propagating (the user's tx already committed; surfacing a 5xx for an action that already succeeded would be wrong).
+- **Per-channel summary logged** on success. Format: `app sent=X/paused=Y, email sent=A/paused=B/blocked=C/disabled=D/failed=E`. Future Series-12 telemetry can pivot this to Micrometer metrics.
+- **Orchestrator's `dispatch` switched to `Propagation.REQUIRES_NEW`** to detach from the listener-thread's OSIV-bound EntityManager session (no active tx after AFTER_COMMIT — see the new IT cheat-sheet entry below).
+
+Files changed (count: 5; 2 new prod, 2 modified prod, 1 new test, 1 progress):
+- `src/main/java/com/childcarewow/calendar/notification/NotificationCreatedEvent.java` — new.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDispatchListener.java` — new.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationService.java` — `+ApplicationEventPublisher` ctor dep + `events.publishEvent(...)` at end of both writer methods.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDispatchOrchestrator.java` — `@Transactional` → `@Transactional(propagation = Propagation.REQUIRES_NEW)` (see notes below).
+- `src/test/java/com/childcarewow/calendar/notification/NotificationDispatchListenerIT.java` — new (3 real-DB ITs).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 3m49s. All ITs green, JaCoCo bundle ≥80%, Spotless clean.
+- [x] `NotificationDispatchListenerIT` — 3/3 green:
+  - **`inviteParentsEventLandsDeliveriesViaListener`** — `EventService.create` with CLASSROOM + `inviteParents=true` → notification + recipients + deliveries all land. Both APP and EMAIL channels present (EVENT_INVITE is in `EMAIL_KINDS`).
+  - **`inviteParentsFalseProducesNoNotificationAndNoDeliveries`** — `inviteParents=false` → `NotificationService.dispatchEventCreated` early-returns, no event published, no listener invocation, no deliveries. Pin the "no wasted email" invariant.
+  - **`deliveriesAreExactlyOnePerChannelPerRecipient`** — exactly one APP + one EMAIL row per (notification, recipient) tuple. Catches a hypothetical regression where the listener double-fires.
+- [x] Existing `NotificationDispatchOrchestratorIT` (10 ITs) still green — `REQUIRES_NEW` doesn't change the orchestrator-called-directly path's behavior.
+
+Notes / surprises:
+- **The OSIV trap (new IT-author cheat-sheet entry).** First test run failed with `TransactionRequiredException: no transaction is in progress`. Root cause: Spring Boot's `spring.jpa.open-in-view=true` default keeps an EntityManager bound to the request thread for the LIFE of the request. When `@TransactionalEventListener(AFTER_COMMIT)` fires synchronously on that same thread (which is the default), the EM is still bound but has no active tx (the outer one already committed). A plain `@Transactional` on `dispatch` inherits the bound EM and tries to `saveAndFlush` without a tx → throws. Fix: `Propagation.REQUIRES_NEW` forces a fresh tx + fresh EM. New cheat-sheet entry: **"`@TransactionalEventListener(AFTER_COMMIT)` + JPA writes need `Propagation.REQUIRES_NEW` on the called service when OSIV is enabled (Spring Boot default). Plain `@Transactional` won't kick in."**
+- **The listener never re-loads the notification before the orchestrator's read.** This is correct — the orchestrator opens its own tx and reads fresh state. If the notification was deleted between commit and listener-fire (unlikely in practice), the orchestrator throws `NotFoundException` which the listener catches. Audit-trail wise, there's no row to dispatch; the listener logs a warning.
+- **Publish placement matters.** Initially I placed the `events.publishEvent` after the recipient saves but BEFORE the method returned. Spring's `@TransactionalEventListener` collects events DURING the tx and replays them AT phase boundaries — so the placement within the @Transactional method doesn't matter as long as the publish happens INSIDE the tx. Verified by reading Spring's source.
+- **Empty-recipient early exits skip the publish naturally.** `writeWithRecipients` early-returns when `recipientIds.isEmpty()` — no notification row, no `events.publishEvent`, no listener fire, no deliveries. The 2nd test pins this.
+- **Existing tests pass without change.** The orchestrator's `REQUIRES_NEW` change doesn't break the direct-call IT (`NotificationDispatchOrchestratorIT`) because that test calls `orchestrator.dispatch` from a non-tx context anyway — `REQUIRES_NEW` from no-tx still starts a new tx, same behavior as `REQUIRED`.
+- **One real production effect:** every EventService.create + EventService.update + EventService.delete + TaskService.create + TaskService.update + TaskService.delete that writes a notification now ALSO writes audit rows in `notification_deliveries`. The `notification_deliveries` table will start filling up. **No actual email sent** because SMTP credentials aren't live yet — the EmailDispatcher returns `FAILED` (no SMTP) or `BLOCKED_BY_ALLOWLIST` (recipients outside dev allowlist), both stamped in the audit row. Dev allowlist is `@childcarewow.com,@ccw.test` in `application.yml` — no recipient in the platform seed matches, so dev runs produce all-`BLOCKED_BY_ALLOWLIST` rows. **This is the correct prod-shape behavior** — operators can grep audit rows to see what would have gone out.
+
+### Carry-forward (one new, one cleared)
+
+- **CLEARED:** orchestrator wire-up. Composition primitive is now live in prod via the AFTER_COMMIT listener.
+- All previously-open carry-forwards remain.
+- **NEW:** the dev SMTP failure path floods `notification_deliveries` with `FAILED` rows (one per EVENT_INVITE recipient × dev environment). Series-12 polish can either (a) flip `notifications.email.enabled=false` in dev so the rows become `DISABLED` (cleaner audit), or (b) add a no-op SMTP server (Mailpit / MailHog) to LocalStack so dev sends produce `SENT` audit rows. Not urgent.
+
+Next part: **N+1 perf fix in `EventService.toViewWithJoins`** (the carry-forward from `docs/perf/7-calendar-benchmark.md`) OR **retry orchestration** (`shouldRetry` helper exists; needs a scheduler that scans FAILED deliveries with `attempt_count < MAX_ATTEMPTS` and re-dispatches with backoff).
+
+---
+
 ## Part 11.x (Series 11) — Dispatch pipeline composition (orchestrator + email resolver) — STATUS: ✅ done
 
 **Off-playbook gap-filler.** The playbook spec ends Series 11 with the dispatchers (11.4–11.6) + audit (11.7) + the holiday-resume job (11.8), but never specifies the WIRE-UP that ties them together at the call site. Parts 11.7 + 11.8 both flagged "dispatch hand-off intentionally omitted" as deferred. This Part closes that gap with a standalone composition primitive that the operator (or a future scheduler) can call to trigger real dispatch.
