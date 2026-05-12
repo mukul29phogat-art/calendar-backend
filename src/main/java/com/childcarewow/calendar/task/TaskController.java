@@ -124,6 +124,23 @@ public class TaskController {
   }
 
   /**
+   * Apply a recurring-task series edit (Part 9.3 → JUST_THIS; 9.4/9.5 lift the other two choices).
+   * Same {@code task.edit} resource-bearing gate as PUT — STAFF can only edit their own assigned
+   * tasks. The endpoint sits under the task id rather than under {@code /tasks/{id}/overrides}
+   * because the request shape covers all three choices, only one of which writes an override row.
+   */
+  @PutMapping("/{id}/series")
+  @Audited(action = "TASK_SERIES_EDIT", targetType = "TASK")
+  public TaskView applySeriesEdit(
+      @AuthenticationPrincipal UserPrincipal actor,
+      @PathVariable UUID id,
+      @Valid @RequestBody TaskSeriesEditRequest req) {
+    Task existing = service.loadForPolicyCheck(id);
+    policy.assertCan(actor, "task.edit", existing);
+    return service.applySeriesEdit(id, req, actor);
+  }
+
+  /**
    * Soft-deletes the task. Resource-bearing {@code task.delete} policy fires Part 3.2's STAFF
    * type-specific scoping (STAFF only on their own assigned tasks). Returns 204 No Content.
    */

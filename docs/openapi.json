@@ -89,6 +89,43 @@
         }
       }
     },
+    "/api/v1/tasks/{id}/series" : {
+      "put" : {
+        "tags" : [ "task-controller" ],
+        "operationId" : "applySeriesEdit",
+        "parameters" : [ {
+          "name" : "id",
+          "in" : "path",
+          "required" : true,
+          "schema" : {
+            "type" : "string",
+            "format" : "uuid"
+          }
+        } ],
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/TaskSeriesEditRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/TaskView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/holidays/{id}" : {
       "get" : {
         "tags" : [ "holiday-controller" ],
@@ -980,6 +1017,33 @@
           "updatedAt" : {
             "type" : "string",
             "format" : "date-time"
+          }
+        }
+      },
+      "TaskSeriesEditRequest" : {
+        "required" : [ "choice", "occurrenceDate" ],
+        "type" : "object",
+        "properties" : {
+          "choice" : {
+            "type" : "string",
+            "enum" : [ "JUST_THIS", "THIS_AND_FOLLOWING", "ENTIRE_SERIES" ]
+          },
+          "occurrenceDate" : {
+            "type" : "string",
+            "format" : "date"
+          },
+          "title" : {
+            "type" : "string"
+          },
+          "dueTime" : {
+            "$ref" : "#/components/schemas/LocalTime"
+          },
+          "status" : {
+            "type" : "string",
+            "enum" : [ "TODO", "IN_PROGRESS", "DONE" ]
+          },
+          "skipped" : {
+            "type" : "boolean"
           }
         }
       },

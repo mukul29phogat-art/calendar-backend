@@ -29,6 +29,60 @@ Next part: X.Y+1
 
 ---
 
+## Part 9.3 (Series 9) — `PUT /api/v1/tasks/{id}/series` — JUST_THIS — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **New endpoint `PUT /api/v1/tasks/{id}/series`** with body `{ choice, occurrenceDate, title?, dueTime?, status?, skipped? }`. Same resource-bearing `task.edit` policy gate as PUT (STAFF only on their own assigned tasks). `@Audited(action="TASK_SERIES_EDIT", targetType="TASK")` captures the action in the audit log.
+- **`EditChoice` enum** in the task package — `JUST_THIS` / `THIS_AND_FOLLOWING` / `ENTIRE_SERIES` — matches the FE prototype's `EditChoice` string-literal union exactly.
+- **`TaskSeriesEditRequest` record** — request DTO. Wraps the choice + occurrence-date + optional override fields.
+- **`TaskService.applySeriesEdit(id, req, actor)`** — dispatches on `req.choice()`:
+  - `JUST_THIS`: validates the occurrence date is in the rule's expansion window (uses `recurrenceService.expand(task, occ, occ)` for a single-day window — if the rule emits it, the override is valid), then calls `recurrenceService.upsertOverride(...)` to insert/replace the `task_instance_overrides` row keyed on `(taskId, occurrenceDate)`. Master task is untouched apart from a `updated_by_user_id` bump.
+  - `THIS_AND_FOLLOWING` → `ValidationException("Part 9.4")` placeholder.
+  - `ENTIRE_SERIES` → `ValidationException("Part 9.5")` placeholder.
+- **Validation order:** (1) task exists + not soft-deleted, (2) task is recurring (`task.recurrenceId IS NOT NULL`), (3) choice routing, (4) for JUST_THIS: occurrence date in rule window. The non-recurring task rejection lands BEFORE the choice routing, so calling JUST_THIS on a non-recurring task hits `"not recurring"`, not `"Part 9.4"` etc.
+
+Files changed (count: 6; 3 new, 2 modified, 1 progress):
+- `src/main/java/com/childcarewow/calendar/task/EditChoice.java` — new enum.
+- `src/main/java/com/childcarewow/calendar/task/TaskSeriesEditRequest.java` — new DTO.
+- `src/main/java/com/childcarewow/calendar/task/TaskService.java` — added `applySeriesEdit`.
+- `src/main/java/com/childcarewow/calendar/task/TaskController.java` — added the new PUT endpoint.
+- `src/test/java/com/childcarewow/calendar/task/TaskSeriesEditJustThisIT.java` — new (8 ITs).
+- `docs/openapi.json` — regenerated for the new endpoint + schemas.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m38s. **284 tests** (was 276), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `TaskSeriesEditJustThisIT` — 8/8 green:
+  - **`justThisUpsertsOverrideForOccurrenceDate`** — DAILY-recurring task → JUST_THIS on a future date with title + dueTime + status override → row lands with all three fields populated + master `tasks.title` unchanged.
+  - **`justThisIsIdempotentSecondCallOverwritesFirst`** — two consecutive calls with the same `(taskId, occurrenceDate)` produce exactly one row; the second payload wins (matches `RecurrenceService.upsertOverride`'s find-or-create-then-overwrite semantics).
+  - **`justThisWithSkippedTrueMarksDateSkipped`** — `skipped=true` writes the boolean; consumed by `expand` filter to drop the date from calendar reads.
+  - **`justThisOnNonRecurringTaskRejected`** — `task.recurrenceId == null` → `ValidationException("not recurring")`.
+  - **`justThisWithOccurrenceDateOutsideRuleWindowRejected`** — date past `untilDate` → `InvalidRecurrenceException` from the in-window check.
+  - **`thisAndFollowingRejectedUntilPart9_4`** — recurring task + THIS_AND_FOLLOWING → `ValidationException("Part 9.4")`.
+  - **`entireSeriesRejectedUntilPart9_5`** — recurring task + ENTIRE_SERIES → `ValidationException("Part 9.5")`.
+  - **`unknownTaskIdReturns404`** — bogus task id → `NotFoundException`.
+- [x] OpenAPI snapshot regenerated to include the new endpoint + schemas.
+
+Notes / surprises:
+- **JDBC `Time` column round-trips through the local timezone.** First attempt at reading `due_time` back with `calendarJdbc.queryForObject(..., java.sql.Time.class, ...)` returned `19:30` instead of `14:30` — the JDBC driver applies the local TZ when converting between `java.sql.Time` and the column. Even `to_char(due_time, 'HH24:MI')` returned `19:30` because the WRITE side via Hibernate had already shifted on insert.
+  - **Fix in this Part:** the test now reads `dueTime` via JPA (`TaskInstanceOverrideRepository.findByTaskIdAndOccurrenceDate(...).getDueTime()`), which returns the correct `LocalTime(14, 30)`. Hibernate handles its own value reads correctly; the raw JDBC reader is the broken layer.
+  - **Why this didn't bite Series 8:** task `due_time` reads in earlier ITs always went through entity/repository, never through `JdbcTemplate.queryForObject` with the `java.sql.Time` type. New code-smell: **never read `time` columns via JdbcTemplate with `java.sql.Time.class`**. The IT is the canonical reference.
+  - **Production impact:** zero. The REST surface returns `LocalTime` via Jackson, which Hibernate populates correctly. The pure-SQL READ path was a test artifact.
+- **`PUT /api/v1/tasks/{id}/series` instead of `POST /api/v1/tasks/{id}/overrides`.** The playbook says POST; I chose PUT because the request shape covers all three choices, only one of which writes an override row. PUT is more accurate semantically (the action is "apply series edit", not "create override"), and PUT-on-a-target-id is consistent with the existing 8.4 PUT path. The route is unambiguous either way; just flagging the deviation.
+- **No notification dispatched on JUST_THIS.** Per FE prototype's `tasksService.ts:328-348`, overrides are scoped to a single occurrence and don't fan out to assignees as `TASK_UPDATED`. Backend matches. Could revisit if product wants per-occurrence notifications — but that's a non-trivial addition (would need a per-occurrence "notification" entity, since occurrences aren't first-class rows).
+- **No soft-flag recompute on JUST_THIS.** Same reasoning — the master row's overlap relations are unchanged. The FE prototype agrees (doesn't call `recomputeForTask`).
+
+### Carry-forward (no change)
+
+- All previously-open carry-forwards remain.
+- Add **"never read `time` columns via JdbcTemplate with `java.sql.Time.class`"** to the IT-author cheat sheet (no doc location for that yet; documented inline in this Part's test file).
+
+Next part: **Part 9.4 — `PUT /api/v1/tasks/{id}/series` THIS_AND_FOLLOWING.** Shortens the existing rule + creates a new task at the split date (sharing `parent_task_group_id`). Special case: when `occurrenceDate == master.dueDate`, collapse to ENTIRE_SERIES (which falls through to 9.5's handler — so 9.4 should land before 9.5, or 9.4 stubs the collapse path until 9.5 wires it).
+
+---
+
 ## Part 9.2 (Series 9) — `POST /api/v1/tasks` with recurrence + multi-assignee — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat

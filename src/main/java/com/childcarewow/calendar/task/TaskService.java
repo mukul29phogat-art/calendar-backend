@@ -263,6 +263,64 @@ public class TaskService {
   }
 
   /**
+   * Apply a recurring-task series edit (Part 9.3+). Dispatches on {@code req.choice()}:
+   *
+   * <ul>
+   *   <li>{@link EditChoice#JUST_THIS} (9.3) — validate the occurrence is in the rule's expansion
+   *       window, then upsert into {@code task_instance_overrides}. Master task unchanged.
+   *   <li>{@link EditChoice#THIS_AND_FOLLOWING} (9.4) — rejected for now.
+   *   <li>{@link EditChoice#ENTIRE_SERIES} (9.5) — rejected for now.
+   * </ul>
+   *
+   * <p>Per the FE prototype's {@code tasksService.ts:328-348}, JUST_THIS does NOT dispatch a
+   * notification and does NOT recompute soft flags — overrides are scoped to a single occurrence
+   * and don't change the master row's overlap relations. The audit row still lands via the
+   * controller's {@code @Audited(TASK_SERIES_EDIT)}.
+   */
+  @Transactional
+  public TaskView applySeriesEdit(UUID id, TaskSeriesEditRequest req, UserPrincipal actor) {
+    Task task =
+        taskRepo
+            .findById(id)
+            .filter(x -> x.getDeletedAt() == null)
+            .orElseThrow(
+                () -> new com.childcarewow.calendar.exception.NotFoundException("Task", id));
+
+    if (task.getRecurrenceId() == null) {
+      throw new ValidationException("recurrence", "task is not recurring");
+    }
+    if (req.choice() == EditChoice.THIS_AND_FOLLOWING) {
+      throw new ValidationException("choice", "THIS_AND_FOLLOWING lands in Part 9.4");
+    }
+    if (req.choice() == EditChoice.ENTIRE_SERIES) {
+      throw new ValidationException("choice", "ENTIRE_SERIES lands in Part 9.5");
+    }
+
+    // JUST_THIS: occurrenceDate must be a date the rule actually produces. Use a single-day
+    // expansion window — if the rule emits it, the override is valid.
+    com.childcarewow.calendar.recurrence.ExpansionResult exp =
+        recurrenceService.expand(task, req.occurrenceDate(), req.occurrenceDate());
+    if (!exp.occurrences().contains(req.occurrenceDate())) {
+      throw new com.childcarewow.calendar.exception.InvalidRecurrenceException(
+          "occurrenceDate is not produced by the task's recurrence rule");
+    }
+
+    TaskInstanceOverride incoming = new TaskInstanceOverride();
+    incoming.setTaskId(id);
+    incoming.setOccurrenceDate(req.occurrenceDate());
+    incoming.setTitle(req.title());
+    incoming.setDueTime(req.dueTime());
+    incoming.setStatus(req.status());
+    incoming.setSkipped(req.skipped() != null && req.skipped());
+    recurrenceService.upsertOverride(incoming);
+
+    task.setUpdatedByUserId(actor.id());
+    taskRepo.saveAndFlush(task);
+
+    return TaskView.fromEntity(task);
+  }
+
+  /**
    * Soft-deletes the task. Idempotent on second delete — a row that's already been soft-deleted
    * surfaces as 404 on the next call (matches the read-path behavior from Part 8.3's {@code
    * findById}).
