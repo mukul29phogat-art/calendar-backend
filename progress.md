@@ -29,6 +29,41 @@ Next part: X.Y+1
 
 ---
 
+## Part 8.8 (Series 8) — Soft-flag recompute on task save (verification) — STATUS: ✅ done
+Date: 2026-05-11
+Operator: Mukul Phogat
+
+What got built (verification part):
+- **No production code changes.** The `softFlagService.recomputeForTask` call already fires from every task mutation path: `TaskService.create` (8.1/8.2), `update` (8.4), `updateStatus` (8.5), and `delete` (8.6 via `removeFlagsForTask`). 8.8 adds the missing tests pinning the bidirectional `DOUBLE_BOOKING` pair lifecycle.
+- Two playbook subcases covered explicitly:
+  1. **Two same-day same-assignee tasks → flag pair A↔B exists** (`TaskCreateIT.twoSameDaySameAssigneeTasksCreateBidirectionalDoubleBookingPair`). Confirms `TaskService.create` → `recomputeForTask` correctly inserts both directions of the pair after the second task lands (per Part 3.11's "recompute after all saves" pattern).
+  2. **Move one task to a different day → flag pair clears** (`TaskUpdateIT.dateMoveOutOfOverlapClearsBidirectionalDoubleBookingPair`). Confirms `TaskService.update` → `recomputeForTask` drops the pair after a date-move pulls one task out of overlap with the other.
+
+Files changed (count: 3):
+- `src/test/java/com/childcarewow/calendar/task/TaskCreateIT.java` — `+twoSameDaySameAssigneeTasksCreateBidirectionalDoubleBookingPair` (now 11 ITs).
+- `src/test/java/com/childcarewow/calendar/task/TaskUpdateIT.java` — `+dateMoveOutOfOverlapClearsBidirectionalDoubleBookingPair` (now 11 ITs).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 56s. JaCoCo bundle ≥80% line; Spotless clean.
+- [x] Both new tests green on first run. The 266-test bundle includes:
+  - **Create-time pair**: 2 same-day same-assignee TODO tasks both null-dueTime → DOUBLE_BOOKING rows exist in both directions (`entity_id=A, conflicting_entity_id=B` AND `entity_id=B, conflicting_entity_id=A`).
+  - **Update-clears pair**: same setup; move one task's dueDate +1 day; both DOUBLE_BOOKING rows touching either task gone afterwards.
+- [x] All earlier tests still green. Previously-passing pair tests in other contexts (`TaskStatusPatchIT.transitionToDoneClearsOverlapPairFlags` for status-change clear; `TaskDeleteIT.deleteClearsBidirectionalDoubleBookingFlagPair` for delete clear) continue to cover the corresponding paths.
+
+Notes / surprises:
+- **Architecture spec §7.3 says "both null/missing → conflict."** The new create-time test exercises this — both inserted tasks have `dueTime=null`, and the resulting flag pair confirms the recompute treats both-null as overlap (per the `dueTimesOverlap` helper in `SoftFlagService` from Part 3.12). The earlier `transitionToDoneClearsOverlapPairFlags` test also relies on this null-null overlap shape, but only implicitly via the post-DONE clear; 8.8's new create-time test makes the both-null rule directly observable.
+- **No code change in `recomputeForTask` despite the spec referencing the dueTime overlap window.** The current `dueTimesOverlap` helper handles both-null correctly out of the box (Part 3.12 review confirmed it returns true when both are null). Adding the test was the only delta.
+- **Combined with `TaskStatusPatchIT.transitionToDoneClearsOverlapPairFlags` (8.5) and `TaskDeleteIT.deleteClearsBidirectionalDoubleBookingFlagPair` (8.6)**, the four soft-flag lifecycle paths are all locked: create-time form, update-date-move clear, status-DONE clear, delete clear. Series-12 polish can drop in `dueTime`-overlap variants without redoing the bidirectional plumbing tests.
+
+### Carry-forward (none cleared, none added)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 8.9 — Notification dispatchers for tasks (verification).** Per playbook line 3337. All four task notification dispatchers (TASK_ASSIGNED, TASK_UPDATED, TASK_DELETED, TASK_STATUS_CHANGED) already exist and have tests covering each transition: TASK_ASSIGNED on create (`TaskCreateIT.notificationRowAndRecipientWrittenForAssignee`); TASK_UPDATED on title-only PUT (`TaskUpdateIT.titleOnlyChangeWritesTaskUpdated`); TASK_DELETED on DELETE (`TaskDeleteIT.writesTaskDeletedNotificationToAssignee`); TASK_STATUS_CHANGED on status-change (`TaskUpdateIT.statusChangeWritesTaskStatusChangedNotification` + `TaskStatusPatchIT.todoToInProgressWritesTaskStatusChanged`); reassignment writes both (`TaskUpdateIT.reassignmentDispatchesTaskAssignedToNewAndTaskUpdatedToOld`). Expected delta: zero or one new edge-case test (TBD reviewing playbook step). 8.9 is largely a "consolidate the verification" progress entry.
+
+---
+
 ## Part 8.7 (Series 8) — Holiday-blocks-task-creation enforcement (verification) — STATUS: ✅ done
 Date: 2026-05-11
 Operator: Mukul Phogat

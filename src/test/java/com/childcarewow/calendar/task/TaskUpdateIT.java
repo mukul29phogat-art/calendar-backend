@@ -281,6 +281,52 @@ class TaskUpdateIT {
   }
 
   @Test
+  void dateMoveOutOfOverlapClearsBidirectionalDoubleBookingPair() {
+    // Part 8.8 verification: TaskService.update → recomputeForTask clears the bidirectional flag
+    // pair when one task moves out of the overlap window. Two same-day same-assignee TODO tasks
+    // form the pair (Part 3.12); moving one to a different day must clear BOTH sides.
+    LocalDate sharedDate = LocalDate.of(2027, 3, 11);
+    UUID t1 = createTaskAndGetId("IT-tu-overlap-a", sharedDate, MAYA, TaskStatus.TODO);
+    UUID t2 = createTaskAndGetId("IT-tu-overlap-b", sharedDate, MAYA, TaskStatus.TODO);
+
+    Integer before =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM conflict_flags "
+                + "WHERE entity_type = 'TASK' AND conflict_type = 'DOUBLE_BOOKING' "
+                + "AND (entity_id IN (?, ?) OR conflicting_entity_id IN (?, ?))",
+            Integer.class,
+            t1,
+            t2,
+            t1,
+            t2);
+    assertThat(before).as("bidirectional pair present before date move").isEqualTo(2);
+
+    // Move t1 to a different day → recomputeForTask runs → both sides of the pair clear.
+    taskService.update(
+        t1,
+        requestFor(
+            "IT-tu-overlap-a",
+            null,
+            MAYA,
+            sharedDate.plusDays(1),
+            TaskStatus.TODO,
+            TaskPriority.MEDIUM),
+        admin());
+
+    Integer after =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM conflict_flags "
+                + "WHERE entity_type = 'TASK' AND conflict_type = 'DOUBLE_BOOKING' "
+                + "AND (entity_id IN (?, ?) OR conflicting_entity_id IN (?, ?))",
+            Integer.class,
+            t1,
+            t2,
+            t1,
+            t2);
+    assertThat(after).as("bidirectional pair cleared after date move").isZero();
+  }
+
+  @Test
   void titleOnlyChangeWritesTaskUpdated() {
     UUID id = createTaskAndGetId("IT-tu-title", LocalDate.of(2026, 9, 17), MAYA, TaskStatus.TODO);
 
