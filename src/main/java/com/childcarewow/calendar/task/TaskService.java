@@ -70,14 +70,6 @@ public class TaskService {
 
     List<UUID> assignees = req.assigneeUserIds();
 
-    // Part 9.1: recurrence + multi-assignee lands in Part 9.2 (independent rule per row per D9).
-    // For 9.1, recurrence is only supported on single-assignee requests.
-    if (req.recurrence() != null && assignees.size() != 1) {
-      throw new ValidationException(
-          "recurrence",
-          "recurrence + multi-assignee lands in Part 9.2; for now use single-assignee only");
-    }
-
     // Hard-block: due_date cannot fall on an approved holiday. Runs once for the whole batch — a
     // blocked date rejects every row, never partially.
     String holidayName = findApprovedHolidayName(req.schoolId(), req.dueDate());
@@ -103,8 +95,8 @@ public class TaskService {
 
     List<Task> saved = new ArrayList<>(assignees.size());
     for (UUID assignee : assignees) {
-      // Per-row recurrence rule creation. Single-assignee gets one rule; Part 9.2 will lift the
-      // single-assignee guard above and let N assignees each get an independent rule (per D9).
+      // Per-row recurrence rule creation. Each row gets an independent rule per D9 — N assignees
+      // → N rules → N tasks, every (task, rule) pair editable in isolation (Part 9.3+ overrides).
       UUID recurrenceId = null;
       if (req.recurrence() != null) {
         com.childcarewow.calendar.task.RecurrenceRule rule = buildRule(req.recurrence());

@@ -29,6 +29,44 @@ Next part: X.Y+1
 
 ---
 
+## Part 9.2 (Series 9) — `POST /api/v1/tasks` with recurrence + multi-assignee — STATUS: ✅ done
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **Lifted the `assignees.size() == 1` guard from Part 9.1.** The fan-out loop already created per-row recurrence rules; 9.2 just removes the up-front rejection. Per locked decision D9, **each fanned-out row gets its OWN `recurrence_id`** — N assignees → N rules → N tasks, with no rule sharing.
+- Updated the loop comment to reflect the now-final D9 contract: per-row independent rule for per-assignee override autonomy.
+- `parent_task_group_id` semantics are unchanged from Part 8.2: non-null only when `assignees.size() > 1`; identifies the multi-assignee batch. The two identifiers are orthogonal — `group_id` is "this batch of rows came from one request"; `recurrence_id` is "this row's recurrence schedule."
+
+Files changed (count: 5; 1 new test, 1 modified 9.1 IT, 2 modified, 1 progress):
+- `src/main/java/com/childcarewow/calendar/task/TaskService.java` — removed the size==1 guard; updated the loop comment.
+- `src/test/java/com/childcarewow/calendar/task/TaskCreateWithRecurrenceIT.java` — dropped `recurrenceWithMultiAssigneeRejectedUntilPart9_2` (now-obsolete contract); unused `ValidationException` import + `TOM` constant removed.
+- `src/test/java/com/childcarewow/calendar/task/TaskCreateWithRecurrenceMultiAssigneeIT.java` — new (2 ITs).
+- `docs/openapi.json` — regenerated (no schema change; keeps the snapshot in sync).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m59s. **276 tests** (was 274), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `TaskCreateWithRecurrenceMultiAssigneeIT` — 2/2 green:
+  - **`threeAssigneesEachGetIndependentRecurrenceIdAndShareGroupId`** — 3 assignees (Maya/Tom/Priya) + DAILY recurrence → 3 tasks, each with a non-null `recurrence_id`, all distinct (`doesNotHaveDuplicates`), all sharing one non-null `parent_task_group_id`. Also asserts each rule row exists in `recurrence_rules`.
+  - **`singleAssigneeWithRecurrenceStillLeavesGroupIdNull`** — regression guard that lifting the 9.1 guard didn't accidentally start setting `group_id` for solo assignments.
+- [x] Existing 9.1 ITs still green (`TaskCreateWithRecurrenceIT`: 6/6, was 7 before drop).
+- [x] Playbook validation gate met: a multi-assignee + recurrence request produces N distinct `recurrence_id`s with one shared `parent_task_group_id` (IT line 102-107).
+
+Notes / surprises:
+- **9.2 was the one-liner predicted in the 9.1 hand-off.** Removing the guard was the only production code change; the rest is test mass. The per-row recurrence-rule creation already lived inside the fan-out loop in 9.1 — 9.2's "code change" was deleting 6 lines.
+- **D9 (independent rules) buys autonomy at the cost of slightly more storage.** N assignees → N recurrence_rules rows for the same nominal schedule. The alternative (shared rule) would have been smaller but would mean shortening one assignee's series (Part 9.4) couldn't be done without forking the rule anyway — so the up-front-fork model is simpler in net.
+- **Override-coupling argument is weaker than I'd written.** `task_instance_overrides(task_id, occurrence_date)` is keyed on `task_id`, not `recurrence_id`. Strictly: a shared rule wouldn't couple overrides. The real D9 rationale is **schedule-edit isolation** (Part 9.4): when Maya extends or shortens her schedule, Tom's must stay put. Independent rules make that trivial. Documented for future-me.
+- **No change needed to read-path.** `RecurrenceService.expand` operates on `(task, rule)` pairs; the calendar feed already loads each task's own `recurrence_id`-pointed rule.
+
+### Carry-forward (no change)
+
+- All previously-open carry-forwards remain. Per-occurrence holiday block (added in 9.1) still pending.
+
+Next part: **Part 9.3 — `PUT /api/v1/tasks/{id}/series` JUST_THIS.** Per-occurrence override insertion (new endpoint, new validator that the occurrence date is in the rule's expansion window, wires through to insert a `task_instance_overrides` row keyed on `(task_id, occurrence_date)`).
+
+---
+
 ## Part 9.1 (Series 9) — `POST /api/v1/tasks` with recurrence (single assignee) — STATUS: ✅ done · **OPENS SERIES 9**
 Date: 2026-05-12
 Operator: Mukul Phogat
