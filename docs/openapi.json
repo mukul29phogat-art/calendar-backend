@@ -361,6 +361,34 @@
         }
       }
     },
+    "/api/v1/important-dates" : {
+      "post" : {
+        "tags" : [ "important-date-controller" ],
+        "operationId" : "create_1",
+        "requestBody" : {
+          "content" : {
+            "application/json" : {
+              "schema" : {
+                "$ref" : "#/components/schemas/CreateImportantDateRequest"
+              }
+            }
+          },
+          "required" : true
+        },
+        "responses" : {
+          "200" : {
+            "description" : "OK",
+            "content" : {
+              "*/*" : {
+                "schema" : {
+                  "$ref" : "#/components/schemas/ImportantDateView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/holidays" : {
       "get" : {
         "tags" : [ "holiday-controller" ],
@@ -407,7 +435,7 @@
       },
       "post" : {
         "tags" : [ "holiday-controller" ],
-        "operationId" : "create_1",
+        "operationId" : "create_2",
         "requestBody" : {
           "content" : {
             "application/json" : {
@@ -542,7 +570,7 @@
       },
       "post" : {
         "tags" : [ "event-controller" ],
-        "operationId" : "create_2",
+        "operationId" : "create_3",
         "requestBody" : {
           "content" : {
             "application/json" : {
@@ -1315,6 +1343,67 @@
           }
         }
       },
+      "CreateImportantDateRequest" : {
+        "required" : [ "date", "kind", "label", "schoolId" ],
+        "type" : "object",
+        "properties" : {
+          "label" : {
+            "maxLength" : 120,
+            "minLength" : 0,
+            "type" : "string"
+          },
+          "date" : {
+            "type" : "string",
+            "format" : "date"
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "kind" : {
+            "type" : "string",
+            "enum" : [ "BIRTHDAY", "IMPORTANT" ]
+          },
+          "studentId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "visibleToParents" : {
+            "type" : "boolean"
+          }
+        }
+      },
+      "ImportantDateView" : {
+        "type" : "object",
+        "properties" : {
+          "id" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "schoolId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "date" : {
+            "type" : "string",
+            "format" : "date"
+          },
+          "label" : {
+            "type" : "string"
+          },
+          "kind" : {
+            "type" : "string",
+            "enum" : [ "BIRTHDAY", "IMPORTANT" ]
+          },
+          "studentId" : {
+            "type" : "string",
+            "format" : "uuid"
+          },
+          "visibleToParents" : {
+            "type" : "boolean"
+          }
+        }
+      },
       "ApproveBatchRequest" : {
         "required" : [ "ids" ],
         "type" : "object",
@@ -1614,37 +1703,6 @@
             }
           }
         } ]
-      },
-      "ImportantDateView" : {
-        "type" : "object",
-        "properties" : {
-          "id" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "schoolId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "date" : {
-            "type" : "string",
-            "format" : "date"
-          },
-          "label" : {
-            "type" : "string"
-          },
-          "kind" : {
-            "type" : "string",
-            "enum" : [ "BIRTHDAY", "IMPORTANT" ]
-          },
-          "studentId" : {
-            "type" : "string",
-            "format" : "uuid"
-          },
-          "visibleToParents" : {
-            "type" : "boolean"
-          }
-        }
       },
       "TaskCalendarItem" : {
         "type" : "object",
