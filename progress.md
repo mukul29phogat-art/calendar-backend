@@ -29,6 +29,46 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.1 (Series 11) — `NotificationView` DTO with field aliasing — STATUS: ✅ done · **OPENS SERIES 11**
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **`NotificationView` record** — response shape for the upcoming `GET /api/v1/notifications/me`. Emits BOTH the legacy FE-prototype keys (`relatedEventId`, `relatedEventTitle`) AND the schema-generic keys (`relatedEntityId`, `relatedEntityTitle`) backed by the same column value, so the FE's existing `Notification` type in `src/types/index.ts:180` stays untouched while the DB schema's `related_entity_*` columns can serve event/task/important-date references uniformly.
+- **`@JsonInclude(NON_NULL)`** elides absent optional fields (related-entity ids/titles, paused reason). Booleans (`paused`) always emit.
+- **Pure record + duplicated-field approach** — Jackson's `@JsonAlias` is deserialization-only (it accepts both names as input but emits one name on output). To emit both keys, the record carries two fields that `fromEntity(Notification, recipients, readBy)` populates from the same source. Clean, no custom serializer needed.
+- **Recipient + readBy ids passed in** at construction time. The read service (Part 11.2) batches those lookups across multiple notifications; the DTO is a pure projection.
+
+Files changed (count: 3; 2 new, 1 progress):
+- `src/main/java/com/childcarewow/calendar/notification/NotificationView.java` — new.
+- `src/test/java/com/childcarewow/calendar/notification/NotificationViewSerializationTest.java` — new (4 unit tests).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 3m15s. **313 tests** (was 309), 3 skipped. JaCoCo bundle ≥80%; Spotless clean.
+- [x] `NotificationViewSerializationTest` — 4/4 green:
+  - **`emitsBothEventAndEntityKeysWithSameValue`** — parses the serialized JSON; asserts all 4 keys present (`relatedEventId`, `relatedEntityId`, `relatedEventTitle`, `relatedEntityTitle`); same value across the two id-keys and across the two title-keys.
+  - **`nullRelatedEntityElidesBothKeyVariants`** — NON_NULL strips both id-keys AND both title-keys when the underlying column is null. The notification still serializes (id, schoolId, kind, message, paused all present).
+  - **`pausedReasonElidedWhenNull`** — `paused: false` always emits (boolean primitive); `pausedReason` elides on null.
+  - **`recipientAndReadByListsRoundTrip`** — `recipientUserIds` + `readBy` arrays serialize as JSON arrays of UUID strings.
+
+Notes / surprises:
+- **Three test-shape compile gotchas under `-Werror`** caught this round, all small:
+  1. `Notification.setCreatedAt(...)` doesn't exist — the column is `insertable=false, updatable=false` and DB-populated. Use a null `createdAt` in the test fixture; doesn't affect the serialization shape we're checking.
+  2. AssertJ's `.asList()` on `ObjectAssert` is deprecated. Cast the map value to `List<?>` first.
+  3. The `containsExactly(String, String)` call against `List<?>` triggers varargs capture errors. Cast to a typed `List<String>` (with `@SuppressWarnings("unchecked")`) before asserting.
+- **Why not custom serializer?** Considered a `JsonSerializer<NotificationView>` that walks the writer and emits both keys explicitly. Rejected — extra code without payoff. Records with duplicated fields are the FE prototype's exact wire shape; same value goes to both sides, Jackson handles it.
+- **`paused` always emits as a primitive boolean.** The FE prototype's `Notification.paused: boolean` is non-optional, so the wire shape must always carry it. `@JsonInclude(NON_NULL)` doesn't strip booleans (they're not nullable — `false` is a valid state).
+- **No DB integration yet.** This Part is a pure projection + serialization pin. Part 11.2 wires the read service + endpoint, which is where the real-DB IT will land.
+
+### Carry-forward (no change)
+
+- All previously-open carry-forwards remain.
+
+Next part: **Part 11.2 — `GET /api/v1/notifications/me`.** Visibility-filtered notifications list + `X-Unread-Count` response header. Need to load notification → recipients → readBy in a batched query (avoid N+1) and apply per-user visibility filtering (notifications scope to recipient ids in `notification_recipients`).
+
+---
+
 ## Part 10.3 (Series 10) — `GET /api/v1/important-dates` with parent visibility — STATUS: ✅ done
 Date: 2026-05-12
 Operator: Mukul Phogat
