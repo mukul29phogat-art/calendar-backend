@@ -88,6 +88,22 @@ public class NotificationDeliveryService {
     return repo.findByNotificationIdOrderByCreatedAtDesc(notificationId);
   }
 
+  /** Single-row lookup. Used by the retry orchestrator to load the row being re-attempted. */
+  @Transactional(readOnly = true)
+  public java.util.Optional<NotificationDelivery> findById(UUID id) {
+    return repo.findById(id);
+  }
+
+  /**
+   * FAILED rows eligible for retry — created before {@code cutoff} (implicit backoff), with {@code
+   * attempt_count < MAX_ATTEMPTS}, AND with no later attempt for the same tuple already recorded.
+   * Backs {@link NotificationDeliveryRetryJob}.
+   */
+  @Transactional(readOnly = true)
+  public List<NotificationDelivery> findFailedRetriable(java.time.OffsetDateTime cutoff) {
+    return repo.findFailedRetriable(MAX_ATTEMPTS, cutoff);
+  }
+
   /** Dashboard query — total rows currently in a given status. */
   @Transactional(readOnly = true)
   public long countByStatus(DeliveryStatus status) {

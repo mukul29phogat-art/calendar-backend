@@ -214,6 +214,123 @@ public class NotificationDispatchOrchestrator {
     }
   }
 
+  /**
+   * Retry a single previously-FAILED delivery (Series-12 retry orchestration). Increments the audit
+   * row's {@code attempt_count} by 1, re-runs the channel-specific send path, and records a new
+   * audit row with the outcome.
+   *
+   * <p><b>Scope: EMAIL only.</b> APP-channel rows can't be FAILED (the audit row is just a stamp
+   * for "row exists in notifications + recipients"), so the retry scheduler never feeds APP
+   * deliveries here. We defensively short-circuit if a non-EMAIL row arrives.
+   *
+   * <p>If the notification has since been paused (e.g. a holiday was approved between the original
+   * send and the retry), the retry records a PAUSED row instead of attempting. Same shape as the
+   * first-attempt pause path.
+   *
+   * @return the {@link RetryResult} indicating what happened
+   */
+  @Transactional(propagation = Propagation.REQUIRES_NEW)
+  public RetryResult retryDelivery(UUID deliveryId) {
+    NotificationDelivery existing = deliveryService.findById(deliveryId).orElse(null);
+    if (existing == null) {
+      log.warn("Retry requested for unknown delivery id={}", deliveryId);
+      return RetryResult.NOT_FOUND;
+    }
+    if (existing.getStatus() != DeliveryStatus.FAILED) {
+      return RetryResult.SKIPPED_NOT_FAILED;
+    }
+    int newAttempt = existing.getAttemptCount() + 1;
+    if (newAttempt > NotificationDeliveryService.MAX_ATTEMPTS) {
+      return RetryResult.SKIPPED_MAX_ATTEMPTS;
+    }
+    if (existing.getChannel() != DeliveryChannel.EMAIL) {
+      // APP-channel rows are audit-only — they never FAIL. Skip defensively.
+      return RetryResult.SKIPPED_NOT_EMAIL;
+    }
+
+    Notification n = notificationRepo.findById(existing.getNotificationId()).orElse(null);
+    if (n == null) {
+      log.warn(
+          "Retry skipped — notification {} no longer exists (delivery={})",
+          existing.getNotificationId(),
+          deliveryId);
+      return RetryResult.NOT_FOUND;
+    }
+
+    // Notification was paused after the original attempt — record PAUSED, no send.
+    if (n.isPaused()) {
+      deliveryService.recordPaused(
+          n.getId(),
+          existing.getRecipientUserId(),
+          DeliveryChannel.EMAIL,
+          newAttempt,
+          n.getPausedReason());
+      return RetryResult.PAUSED;
+    }
+
+    Optional<String> emailOpt = emailResolver.resolveEmail(existing.getRecipientUserId());
+    if (emailOpt.isEmpty()) {
+      deliveryService.recordFailed(
+          n.getId(),
+          existing.getRecipientUserId(),
+          DeliveryChannel.EMAIL,
+          newAttempt,
+          "Recipient email not found in platform.users");
+      return RetryResult.FAILED;
+    }
+
+    EmailContent content = emailRenderer.render(n);
+    DispatchResult result =
+        emailDispatcher.send(emailOpt.get(), content.subject(), content.htmlBody());
+    return switch (result) {
+      case SENT -> {
+        deliveryService.recordSent(
+            n.getId(), existing.getRecipientUserId(), DeliveryChannel.EMAIL, newAttempt);
+        yield RetryResult.SENT;
+      }
+      case BLOCKED_BY_ALLOWLIST -> {
+        deliveryService.recordPaused(
+            n.getId(),
+            existing.getRecipientUserId(),
+            DeliveryChannel.EMAIL,
+            newAttempt,
+            "BLOCKED_BY_ALLOWLIST");
+        yield RetryResult.BLOCKED;
+      }
+      case DISABLED -> {
+        deliveryService.recordPaused(
+            n.getId(),
+            existing.getRecipientUserId(),
+            DeliveryChannel.EMAIL,
+            newAttempt,
+            "EMAIL_DISABLED");
+        yield RetryResult.DISABLED;
+      }
+      case FAILED -> {
+        deliveryService.recordFailed(
+            n.getId(),
+            existing.getRecipientUserId(),
+            DeliveryChannel.EMAIL,
+            newAttempt,
+            "Dispatcher returned FAILED");
+        yield RetryResult.FAILED;
+      }
+    };
+  }
+
+  /** Outcome of a single {@link #retryDelivery} call. */
+  public enum RetryResult {
+    SENT,
+    FAILED,
+    PAUSED,
+    BLOCKED,
+    DISABLED,
+    NOT_FOUND,
+    SKIPPED_NOT_FAILED,
+    SKIPPED_MAX_ATTEMPTS,
+    SKIPPED_NOT_EMAIL
+  }
+
   /** Per-channel counts. Mutable counters kept package-visible so tests can read them. */
   public static final class DispatchSummary {
     int appSent;
