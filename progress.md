@@ -29,6 +29,67 @@ Next part: X.Y+1
 
 ---
 
+## Part 11.6 (Series 11) — Push dispatcher (Firebase Admin SDK, mock-only) — STATUS: ✅ done
+
+**Mock-only landing.** Operator's directive: ship the dispatcher class + dev-allowlist gate + unit tests using Mockito over `FirebaseMessaging`. No live-fire send. The production wiring (reading the service-account JSON from `childcarewow-calendar/dev/firebase-service-account` via LocalStack / AWS Secrets Manager) lands as a prod-profile bean but isn't exercised by tests.
+
+**Rationale for the deferred live-fire test:** ChildcareWow v1 is **web-only**. No iOS / Android client exists, so live-fire FCM push has nowhere to send. Web Push (VAPID + service-worker) is a **separate dispatcher class** for the browser delivery path — it doesn't share FCM's transport. This is a **conscious skip**, not a carry-forward — when a mobile client ships OR we add web-push, the dispatcher API is in place.
+
+Date: 2026-05-13
+Operator: Mukul Phogat
+
+What got built:
+- **`firebase-admin:9.4.3`** dependency added to `pom.xml`.
+- **`PushDispatcher`** — lowest-level FCM-send primitive. `send(fcmToken, title, body)` returns `DispatchResult`: `SENT` / `DISABLED` / `BLOCKED_BY_ALLOWLIST` / `FAILED`. Mirrors `EmailDispatcher`'s shape from Part 11.4 — same no-throw contract (FCM exceptions caught + logged), same allowlist-in-code enforcement (arch spec §7.4).
+- **`PushDispatcherProperties`** — `@ConfigurationProperties("notifications.push")` with `enabled: boolean` + `devAllowlist: List<String>`. Default `enabled=false` because v1 is web-only.
+- **`FirebaseMessagingConfig`** — prod-profile bean wiring. `@ConditionalOnProperty("notifications.push.firebase.enabled")` creates `FirebaseApp` + `FirebaseMessaging` from a service-account JSON path. Default-disabled → no beans created → `PushDispatcher`'s `@Autowired(required=false) FirebaseMessaging` resolves to `null`.
+- **`PushDispatcher.isEnabled()`** convenience — returns `props.enabled() && firebaseMessaging != null`. Future orchestrator wire-in can gate on this before iterating the PUSH channel (avoids the audit-log-noise problem from writing FAILED rows when no FCM bean exists).
+- **Token-masking helper** for log lines — FCM tokens are 100+ char per-device credentials; logs show only the last 8 chars (`[***]xxxxxxxx`).
+- **`application.yml` push config** — `notifications.push.{enabled, dev-allowlist, firebase.{enabled, service-account-path}}` with safe defaults.
+
+Files changed (count: 6; 1 modified pom, 1 modified yml, 3 new prod, 1 new test):
+- `pom.xml` — `+com.google.firebase:firebase-admin:9.4.3`.
+- `src/main/resources/application.yml` — `+notifications.push.*` keys with safe defaults.
+- `src/main/java/com/childcarewow/calendar/notification/PushDispatcherProperties.java` — new record.
+- `src/main/java/com/childcarewow/calendar/notification/PushDispatcher.java` — new dispatcher.
+- `src/main/java/com/childcarewow/calendar/notification/FirebaseMessagingConfig.java` — new prod-only bean wiring.
+- `src/test/java/com/childcarewow/calendar/notification/PushDispatcherTest.java` — new (9 unit tests).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS. All ITs green, JaCoCo bundle ≥80%, Spotless clean.
+- [x] `PushDispatcherTest` — 9/9 green:
+  - **`allowlistedTokenGetsSent`** — exact-match allowlist + mocked `FirebaseMessaging.send` returning a message id → `SENT`, FCM invoked once.
+  - **`emptyAllowlistPermitsAllTokens`** — prod default (empty list) accepts any token.
+  - **`nonAllowlistedTokenIsBlockedAndFcmUntouched`** — non-allowlisted token → `BLOCKED_BY_ALLOWLIST`; FCM never called.
+  - **`disabledFlagShortCircuitsBeforeFcm`** — `enabled=false` → `DISABLED`; FCM never called.
+  - **`noFirebaseBeanReturnsDisabledEvenWhenPropertyEnabled`** — the critical dev/test runtime case: `firebaseMessaging=null` + `enabled=true` → `DISABLED` (no NPE, no exception). Pins the no-bean-no-crash invariant.
+  - **`fcmFailureReturnsFailedNotThrown`** — mocked `FirebaseMessagingException` → `FAILED`; no propagation.
+  - **`runtimeExceptionAlsoReturnsFailedNotThrown`** — defensive catch of non-FCM `RuntimeException`.
+  - **`nullTokenIsBlocked`** — null token → `BLOCKED_BY_ALLOWLIST`.
+  - **`isEnabledReflectsBothPropertyAndBeanPresence`** — `isEnabled()` is `true` only when BOTH `enabled=true` AND `firebaseMessaging != null`.
+- [x] No integration test — same posture as 11.4 (unit-tested with mocks; the SpringBootTest harness doesn't need a real FCM round-trip).
+
+Notes / surprises:
+- **`@Autowired(required = false) @Nullable FirebaseMessaging`** is the cleanest pattern for "absence is normal." Without it, every dev-runtime startup would fail because no `FirebaseMessaging` bean exists. The constructor accepts null; the dispatcher gracefully returns `DISABLED` for every call. New IT-author cheat-sheet entry: **when an external SDK bean is conditionally provided, the consumer should use `@Autowired(required=false)` + null-guard rather than `@ConditionalOnBean` on the consumer itself** — that way the consumer is always available for autowiring (Spring doesn't choose between two PushDispatcher beans) and the conditional behavior is internal.
+- **Dev-allowlist is exact-match, not suffix-match.** FCM tokens are opaque 100+ char strings; there's no "domain" concept to filter on. The cleanest semantic is "list of test device tokens." Operators add their test-device tokens to the allowlist when they want to verify push delivery in dev; non-listed tokens get `BLOCKED_BY_ALLOWLIST`.
+- **Token-masking in logs.** FCM tokens are per-device credentials — accidentally logging them in plaintext is a security gotcha. The `maskToken` helper renders `[***]` + last 8 chars, enough for correlation but not enough to abuse.
+- **`@ConditionalOnProperty` on `FirebaseMessagingConfig`** — without this, Spring would try to create `FirebaseApp.initializeApp` at every startup, requiring a valid service-account JSON. With it, the config class is skipped entirely in dev/test, no service-account-JSON read attempted.
+- **`FirebaseMessaging` is final.** Mockito CAN mock it (with the inline mock-maker that's already on the classpath in this project — `mockito-core` 5.x bundles it), but it's worth noting for future maintainers: if Mockito's mock-maker config ever changes, push tests might break. Documented inline in the test file.
+- **No orchestrator wire-in.** The dispatcher is dormant. `NotificationDispatchOrchestrator` still iterates only APP + EMAIL channels. Wiring PUSH in needs an `FcmTokenResolver` (parallel to `PlatformUserEmailResolver`) plus a `device_tokens` table that doesn't exist yet. When that lands, the orchestrator gets a `dispatchPushChannel` method gated by `pushDispatcher.isEnabled()` — that prevents the audit-log noise that would come from FAILED PUSH rows for every recipient when no FCM bean exists.
+- **Series 11 backend is now at 9/10.** 11.10 (FE cutover) remains, operator-gated. Note: 11.9 (parent calendar QA pass) shipped earlier in this session (PR #136).
+
+### Deferred (conscious skips, not carry-forwards)
+
+- **Live-fire FCM push send.** ChildcareWow v1 is web-only — no mobile client exists. The Firebase service-account JSON + test device token from the playbook spec would have nothing meaningful to send to. **This is not a blocker** — when a mobile client ships, the dispatcher API is already in place; the operator flips `notifications.push.firebase.enabled=true`, sets the service-account path, and live-fire works.
+- **Web Push (VAPID + service-worker).** Separate dispatcher class for browser-delivery push. Doesn't share FCM's transport — uses VAPID keys + the browser's Push API. Tracked as a separate future Part if/when we want browser push notifications.
+- **`FcmTokenResolver` + `device_tokens` table.** Needed before the orchestrator can wire PUSH into its channel routing. Tracked alongside whichever client surface (mobile or web) actually needs push.
+- **Production FCM operator wire-up.** When ready: set `notifications.push.firebase.enabled=true` + `notifications.push.firebase.service-account-path=$FIREBASE_SERVICE_ACCOUNT_PATH` in the prod profile YAML. AWS Secrets Manager materializes the JSON to a file path via Spring Cloud AWS (Part 0.8) at deploy time.
+
+Next part: **Part 11.10 — Frontend cutover** (operator-gated, ≥7 days FE shadow against the real notification + soft-flag endpoints). Series 11 backend is functionally complete; 11.10 is operator-driven FE work.
+
+---
+
 ## Series-11 holiday-resume → dispatch reconnection — STATUS: ✅ done
 
 **Off-playbook follow-up.** Closes the edge-case carry-forward surfaced when the retry job (PR #140) landed: notifications paused at create-time by a holiday produced PAUSED audit rows, the holiday-resume job (Part 11.8) unpaused the notification but didn't fire dispatch, and the retry job's eligibility filter ignored PAUSED rows. Net effect: the email never went out even after the holiday cleared.
