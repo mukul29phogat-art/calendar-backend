@@ -22,6 +22,22 @@ notifications:
     dev-allowlist:
       - "@childcarewow.com"
       - "@ccw.test"
+  push:
+    # Part 11.6 — global kill-switch. Default FALSE because v1 is web-only and no iOS/Android
+    # client exists yet; live-fire push has nowhere to send. PushDispatcher returns DISABLED for
+    # every call until the operator flips this AND provides a service-account JSON.
+    enabled: false
+    # Exact-match FCM token allowlist (architecture spec §7.4 dev-allowlist mandate, push variant).
+    # Empty list in prod (permits all). Non-empty list restricts pushes to those specific devices.
+    dev-allowlist: []
+    firebase:
+      # When true, FirebaseMessagingConfig creates the FirebaseApp + FirebaseMessaging beans from
+      # service-account-path. Default false → no beans → PushDispatcher's @Autowired(required=false)
+      # resolves to null → every send() returns DISABLED.
+      enabled: false
+      # Path to the Firebase service-account JSON. Operator sets this from the LocalStack /
+      # Secrets Manager-materialized file at deploy time. Unused when firebase.enabled=false.
+      service-account-path: ${FIREBASE_SERVICE_ACCOUNT_PATH:}
 
 spring:
   application:
