@@ -29,6 +29,71 @@ Next part: X.Y+1
 
 ---
 
+## Series-11 retry-orchestration carry-forward — `NotificationDeliveryRetryJob` — STATUS: ✅ done
+
+**Off-playbook carry-forward closure.** Closes the retry-orchestration carry-forward tracked since Part 11.7. The `shouldRetry(attempt) < MAX_ATTEMPTS` helper existed but no scheduler invoked it; FAILED `notification_deliveries` rows just sat in the audit log. This Part adds the scanner.
+
+Date: 2026-05-13
+Operator: Mukul Phogat
+
+What got built:
+- **`NotificationDispatchOrchestrator.retryDelivery(UUID deliveryId)`** — new method that retries a SINGLE failed delivery row. Increments `attempt_count` by 1, re-runs the EMAIL send (resolve email → render → dispatch), and records a new audit row. Returns a `RetryResult` enum (`SENT` / `FAILED` / `PAUSED` / `BLOCKED` / `DISABLED` / `NOT_FOUND` / `SKIPPED_*`). Scope: EMAIL channel only — APP rows can't be FAILED in practice; defensive `SKIPPED_NOT_EMAIL` short-circuit.
+- **`NotificationDeliveryRetryJob`** — `@Scheduled(cron = "0 0,30 * * * *")` (every 30 min) with `@SchedulerLock("DELIVERY_RETRY", lockAtMostFor=PT15M)` for multi-instance ECS. `retryUsingClock(Clock)` test seam mirrors the pattern from `HolidaySuppressionResumeJob`.
+- **Implicit backoff via the tick interval.** `BACKOFF_GUARD=30 min` matches the cron. The eligibility query filters `created_at < now() - BACKOFF_GUARD`, so a row that failed 5 minutes ago waits at least 30 minutes for its retry. Effective shape: attempt 1 fails → 30 min → retry 2 → 30 min → retry 3 → stop. Total wall-clock retry window ~60 min.
+- **Eligibility query** (`ConflictFlagRepository`-style native SQL on `NotificationDeliveryRepository.findFailedRetriable`):
+  ```sql
+  SELECT * FROM notification_deliveries d
+  WHERE d.status = 'FAILED'
+    AND d.attempt_count < :maxAttempts
+    AND d.created_at < :cutoff
+    AND NOT EXISTS (
+      SELECT 1 FROM notification_deliveries d2
+      WHERE d2.notification_id = d.notification_id
+        AND d2.recipient_user_id = d.recipient_user_id
+        AND d2.channel = d.channel
+        AND d2.attempt_count > d.attempt_count
+    )
+  ORDER BY d.created_at ASC
+  ```
+  The `NOT EXISTS` prevents re-picking a row that already has a later attempt (e.g. retry 2 succeeded after retry 1 failed — the SENT row's higher attempt_count blocks the FAILED row from being a retry candidate).
+- **`NotificationDeliveryService.findById(id)` + `findFailedRetriable(cutoff)`** — service-layer wrappers.
+- **Per-row failure isolation.** A single delivery's retry exception (orchestrator throws, platform DB unreachable) is caught + logged; the job continues with the next row. The next tick re-finds the same FAILED row.
+
+Files changed (count: 5; 1 new prod, 3 modified prod, 1 new test, 1 progress):
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDeliveryRepository.java` — `+findFailedRetriable` native query.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDeliveryService.java` — `+findById`, `+findFailedRetriable`.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDispatchOrchestrator.java` — `+retryDelivery` + `+RetryResult` enum.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDeliveryRetryJob.java` — new.
+- `src/test/java/com/childcarewow/calendar/notification/NotificationDeliveryRetryJobIT.java` — new (6 real-DB ITs).
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 1m22s. All ITs green, JaCoCo bundle ≥80%, Spotless clean.
+- [x] `NotificationDeliveryRetryJobIT` — 6/6 green:
+  - **`retryProducesNewSentRowWhenSmtpRecovers`** — seed FAILED row backdated 1 hour, mocked `JavaMailSender.send` succeeds → orchestrator records a new SENT row with `attempt=2`. The original FAILED row remains in the audit log.
+  - **`recentFailureIsNotPickedUpYetByBackoffGate`** — FAILED 5 min ago → NOT eligible (BACKOFF_GUARD=30 min). Zero new audit rows.
+  - **`maxedOutAttemptsAreNotRetried`** — `attempt_count=3` (MAX) → NOT eligible. Zero new rows.
+  - **`deliveryWithLaterSuccessIsNotRetriedAgain`** — attempt=1 FAILED + attempt=2 SENT for the same tuple → FAILED NOT eligible (NOT EXISTS blocks it).
+  - **`appChannelFailuresAreNotRetriedDefensively`** — synthesized APP-channel FAILED row → orchestrator short-circuits with `SKIPPED_NOT_EMAIL`, no new row written.
+  - **`pausedNotificationDuringRetryRecordsPausedRow`** — notification gets paused (holiday approved post-failure) between attempt 1 + retry → retry records PAUSED with the new reason instead of attempting SMTP.
+
+Notes / surprises:
+- **`NOT EXISTS` is the key correctness invariant.** Without it, the scanner would re-pick the original FAILED row on every tick after a later attempt succeeded. The audit log accumulates one row per attempt; the eligibility filter scopes to "latest attempt is FAILED."
+- **Implicit-backoff approach over explicit `scheduled_at` math.** The schema's `scheduled_at` field could have powered the queue-style "when to retry" model, but the implicit approach (cron tick = backoff gate) is simpler — fewer moving parts, equivalent observable behavior. If we ever need different per-attempt backoff intervals (e.g. exponential), revisit and switch to `scheduled_at`.
+- **Per-tick batch size unbounded.** The query returns all eligible rows; if the FAILED count is high (e.g. SMTP was down for an hour, 10K rows pile up), the job will iterate all of them in one tick. Production may want a `LIMIT` clause + chunking; for now the audit count is bounded by the recipient × email-kind product per hour. Series-12 polish.
+- **Same OSIV trap applies — `retryDelivery` uses `Propagation.REQUIRES_NEW`.** The scheduler thread has its own OSIV-bound EM but no active tx after the previous loop iteration. REQUIRES_NEW forces a fresh tx + fresh EM per retry, same as `dispatch`.
+- **PAUSED retries are surprisingly clean.** If the operator approves a holiday after some EVENT_INVITE deliveries fail (rare but legal), the next retry cycle records PAUSED rows. The audit log shows: attempt 1 FAILED (transient SMTP), attempt 2 PAUSED (holiday approved). The holiday-resume job (Part 11.8) eventually flips paused=false, and... the row stays PAUSED in the audit (no further retry — the NOT EXISTS clause sees attempt 2 PAUSED as "later attempt exists, latest is not FAILED"). **Edge case to revisit:** a holiday-paused notification that should resume + dispatch never gets re-attempted by this job. The 11.8 job just flips the `notifications.paused` flag; nothing re-invokes the orchestrator. **Documented as a follow-up below.**
+
+### Carry-forward (one cleared, one new edge case)
+
+- **CLEARED:** retry orchestration scheduler — `shouldRetry` helper is now exercised by `NotificationDeliveryRetryJob`. Three of the three off-playbook deferred items (orchestrator wire-up + N+1 fix + retry orchestration) are now closed.
+- **NEW:** holiday-resume → dispatch reconnection. The 11.8 `HolidaySuppressionResumeJob` unpauses notifications but doesn't fire a new dispatch. The retry job's NOT EXISTS clause means PAUSED rows from the retry path also stay PAUSED forever (no new attempt). A small follow-up Part can either (a) have the resume job publish a synthetic `NotificationCreatedEvent` per unpaused row, OR (b) have the retry job include PAUSED-with-holiday-reason rows when the notification's current state is paused=false.
+- All previously-open carry-forwards remain.
+
+Next part: **operator decision.** Three orthogonal directions remain — the dev SMTP-failure noise cleanup (Series-12 polish), the holiday-resume → dispatch reconnection (new carry-forward above), or wrap and review. Note: with this Part shipped, **every operator-blocked item is now either deferred-for-good-reason (SMTP/FCM creds, FE cutovers) or surface-area carry-forwards**. The session has filled in the entire feasible backend surface.
+
+---
+
 ## Series-11 perf carry-forward — N+1 fix in `EventService.findInWindow` — STATUS: ✅ done
 
 **Off-playbook carry-forward closure.** Closes the perf carry-forward tracked in `docs/perf/7-calendar-benchmark.md` since Series 7. The calendar-window read for events was issuing 4 queries per event (attendees, students, exclusions, soft-flags) PLUS 1-2 visibility-filter queries per event (parent-classroom membership, staff-attendee check). For a 250-event window, that's 1250-1500 queries — dominating the p95 latency at ~5s vs the 500ms SLO.
