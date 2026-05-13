@@ -166,6 +166,63 @@ class NotificationDeliveryRetryJobIT {
   }
 
   @Test
+  void holidayPausedRowReconnectsOnceNotificationUnpaused() {
+    // Seed: PAUSED-by-holiday delivery row + notification still paused. First retry tick finds
+    // NOTHING eligible. Then the holiday-resume job (simulated by flipping the column) flips
+    // notification.paused=false. Next retry tick picks up the PAUSED row and dispatches → SENT.
+    UUID notifId = seedNotification("IT-ndr-holiday-reconnect", NotificationKind.EVENT_INVITE);
+    // Notification was created during a holiday — it's currently paused.
+    calendarJdbc.update(
+        "UPDATE notifications SET paused = true, paused_reason = 'Holiday: Independence Day' "
+            + "WHERE id = ?",
+        notifId);
+    seedRecipient(notifId, MAYA);
+    seedDelivery(
+        notifId, MAYA, DeliveryStatus.PAUSED, 1, "Holiday: Independence Day", minutesAgo(60));
+
+    // Holiday still in effect → no retry candidate yet.
+    int firstPass = job.retryUsingClock(nowClock());
+    assertThat(firstPass).isZero();
+
+    // Holiday-resume job has fired and cleared the pause.
+    calendarJdbc.update(
+        "UPDATE notifications SET paused = false, paused_reason = NULL WHERE id = ?", notifId);
+
+    // Next retry tick picks up the PAUSED row.
+    int secondPass = job.retryUsingClock(nowClock());
+    assertThat(secondPass).isEqualTo(1);
+
+    // New row: SENT with attempt=2. The original PAUSED (attempt=1) row remains as audit.
+    List<String> statuses = deliveryStatuses(notifId);
+    assertThat(statuses).containsExactlyInAnyOrder("PAUSED", "SENT");
+    Integer maxAttempt =
+        calendarJdbc.queryForObject(
+            "SELECT MAX(attempt_count) FROM notification_deliveries WHERE notification_id = ?",
+            Integer.class,
+            notifId);
+    assertThat(maxAttempt).isEqualTo(2);
+  }
+
+  @Test
+  void allowlistPausedRowIsNotRetriedEvenAfterCutoff() {
+    // PAUSED with reason=BLOCKED_BY_ALLOWLIST → NOT a holiday → never retried. The dev allowlist
+    // is environment state, not a transient condition.
+    UUID notifId = seedNotification("IT-ndr-allowlist-paused", NotificationKind.EVENT_INVITE);
+    seedRecipient(notifId, MAYA);
+    seedDelivery(notifId, MAYA, DeliveryStatus.PAUSED, 1, "BLOCKED_BY_ALLOWLIST", minutesAgo(120));
+
+    int processed = job.retryUsingClock(nowClock());
+
+    assertThat(processed).isZero();
+    Integer total =
+        calendarJdbc.queryForObject(
+            "SELECT COUNT(*) FROM notification_deliveries WHERE notification_id = ?",
+            Integer.class,
+            notifId);
+    assertThat(total).isEqualTo(1);
+  }
+
+  @Test
   void pausedNotificationDuringRetryRecordsPausedRow() {
     // FAILED delivery exists; then the notification is paused (e.g. a holiday was approved
     // post-failure). The retry attempt records a PAUSED row, not a SENT/FAILED one.

@@ -29,6 +29,49 @@ Next part: X.Y+1
 
 ---
 
+## Series-11 holiday-resume → dispatch reconnection — STATUS: ✅ done
+
+**Off-playbook follow-up.** Closes the edge-case carry-forward surfaced when the retry job (PR #140) landed: notifications paused at create-time by a holiday produced PAUSED audit rows, the holiday-resume job (Part 11.8) unpaused the notification but didn't fire dispatch, and the retry job's eligibility filter ignored PAUSED rows. Net effect: the email never went out even after the holiday cleared.
+
+Date: 2026-05-13
+Operator: Mukul Phogat
+
+What got built:
+- **`NotificationDeliveryRepository.findFailedRetriable` widened** to a second trigger: `status='PAUSED' AND last_error LIKE 'Holiday: %' AND notifications.paused = false`. LEFT JOIN to `notifications` so the SQL can check current pause state inline. Same `attempt_count < maxAttempts` + `created_at < cutoff` + NOT EXISTS gates as the FAILED path.
+- **`PAUSED-by-allowlist` rows excluded by `last_error LIKE 'Holiday: %'`**. `BLOCKED_BY_ALLOWLIST` + `EMAIL_DISABLED` reasons reflect dev-environment state, not transient conditions to retry past.
+- **`NotificationDispatchOrchestrator.retryDelivery` widened** to accept PAUSED inputs alongside FAILED. The rest of the method is unchanged — it already loads fresh notification state and writes PAUSED again if the notification got re-paused mid-retry.
+- **`RetryResult.SKIPPED_NOT_FAILED` → `SKIPPED_NOT_RETRIABLE`** (more accurate name now that PAUSED is also retriable).
+
+Files changed (count: 4; 3 modified prod, 1 modified test, 1 progress):
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDeliveryRepository.java` — widened query with LEFT JOIN.
+- `src/main/java/com/childcarewow/calendar/notification/NotificationDispatchOrchestrator.java` — widened input filter, renamed enum value.
+- `src/test/java/com/childcarewow/calendar/notification/NotificationDeliveryRetryJobIT.java` — 2 new ITs.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 1m18s. All ITs green, JaCoCo bundle ≥80%, Spotless clean.
+- [x] `NotificationDeliveryRetryJobIT` — 8/8 green (was 6/6):
+  - **`holidayPausedRowReconnectsOnceNotificationUnpaused`** — full lifecycle: PAUSED row + notification.paused=true → first tick is no-op (notification still paused). Flip notification.paused=false (simulates `HolidaySuppressionResumeJob`). Second tick picks up the PAUSED row, dispatches, lands new SENT row with attempt=2. The original PAUSED row remains in audit.
+  - **`allowlistPausedRowIsNotRetriedEvenAfterCutoff`** — PAUSED with `last_error='BLOCKED_BY_ALLOWLIST'` → NOT eligible regardless of age. Pins the holiday-vs-allowlist distinction at the SQL level.
+- [x] Existing 6 ITs still green — FAILED-retry path unchanged.
+
+Notes / surprises:
+- **One LEFT JOIN, no behavior surprise.** The existing FAILED branch doesn't care about `notifications.paused` (FAILED is independent of notification pause state — it's about SMTP failure, not holiday). The LEFT JOIN's `n.paused = false` predicate only constrains the PAUSED branch via the boolean OR. No false-positives.
+- **Reconnection wave timing.** With the retry job ticking every 30 min and the holiday-resume job ticking hourly, the worst-case latency between holiday-clears-at-midnight and email-actually-goes-out is ~90 minutes (worst-case alignment of the two cron schedules + the 30-min backoff guard). Acceptable for the use case — holidays don't have minute-scale urgency.
+- **Audit log accurately reflects the journey.** A row that was originally PAUSED-by-holiday and eventually SENT shows BOTH rows: `attempt=1 PAUSED Holiday: Independence Day` + `attempt=2 SENT`. Operators can trace why the email took ~30 min after the holiday cleared.
+- **No change to `NotificationDispatchOrchestrator.dispatch`.** The original-write path is unchanged — paused notifications still write PAUSED audit rows. The reconnection is a SECONDARY path through the retry job.
+- **Edge case: notification gets re-paused mid-retry.** If a second holiday gets approved AFTER the resume job cleared the first but BEFORE the retry tick runs, the orchestrator's `n.isPaused()` check at retry time records PAUSED again. The retry job will then re-pick the row on the next eligibility scan (when paused=false again). Self-healing.
+
+### Carry-forward (one cleared, no new)
+
+- **CLEARED:** holiday-resume → dispatch reconnection. The retry job's widened eligibility filter now catches PAUSED-by-holiday rows whose notifications have been unpaused. The audit trail is complete; the dispatch actually fires.
+- All previously-open carry-forwards remain.
+- **Still open after this Part:** dev SMTP-failure noise cleanup (Series-12 polish) + operator-blocked items (real SMTP/FCM creds, 11.6 push dispatcher, FE cutovers).
+
+Next part: **operator decision.** The backend feasible surface this session is now complete. Three orthogonal directions remain — all either operator-blocked (FCM/SMTP creds, FE work) or Series-12 polish (dev allowlist tuning, dispatcher metrics, per-user notification preferences).
+
+---
+
 ## Series-11 retry-orchestration carry-forward — `NotificationDeliveryRetryJob` — STATUS: ✅ done
 
 **Off-playbook carry-forward closure.** Closes the retry-orchestration carry-forward tracked since Part 11.7. The `shouldRetry(attempt) < MAX_ATTEMPTS` helper existed but no scheduler invoked it; FAILED `notification_deliveries` rows just sat in the audit log. This Part adds the scanner.

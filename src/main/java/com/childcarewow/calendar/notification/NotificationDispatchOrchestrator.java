@@ -215,16 +215,26 @@ public class NotificationDispatchOrchestrator {
   }
 
   /**
-   * Retry a single previously-FAILED delivery (Series-12 retry orchestration). Increments the audit
-   * row's {@code attempt_count} by 1, re-runs the channel-specific send path, and records a new
-   * audit row with the outcome.
+   * Retry a single delivery whose current state is FAILED or PAUSED-by-holiday-since-cleared.
+   * Increments the audit row's {@code attempt_count} by 1, re-runs the channel-specific send path,
+   * and records a new audit row with the outcome.
    *
    * <p><b>Scope: EMAIL only.</b> APP-channel rows can't be FAILED (the audit row is just a stamp
    * for "row exists in notifications + recipients"), so the retry scheduler never feeds APP
    * deliveries here. We defensively short-circuit if a non-EMAIL row arrives.
    *
-   * <p>If the notification has since been paused (e.g. a holiday was approved between the original
-   * send and the retry), the retry records a PAUSED row instead of attempting. Same shape as the
+   * <p><b>Two retry triggers:</b>
+   *
+   * <ul>
+   *   <li>FAILED row + {@code attempt_count < MAX} + backoff cutoff passed → re-attempt SMTP.
+   *   <li>PAUSED row with {@code last_error LIKE 'Holiday: %'} + underlying notification's {@code
+   *       paused = false} (holiday-resume job has fired) → re-attempt SMTP. Closes the gap that
+   *       {@link HolidaySuppressionResumeJob} leaves open: it flips {@code paused=false} but
+   *       doesn't itself dispatch.
+   * </ul>
+   *
+   * <p>If the notification has since been re-paused (e.g. another holiday was approved between the
+   * resume and the retry), the retry records a PAUSED row instead of attempting. Same shape as the
    * first-attempt pause path.
    *
    * @return the {@link RetryResult} indicating what happened
@@ -236,8 +246,9 @@ public class NotificationDispatchOrchestrator {
       log.warn("Retry requested for unknown delivery id={}", deliveryId);
       return RetryResult.NOT_FOUND;
     }
-    if (existing.getStatus() != DeliveryStatus.FAILED) {
-      return RetryResult.SKIPPED_NOT_FAILED;
+    if (existing.getStatus() != DeliveryStatus.FAILED
+        && existing.getStatus() != DeliveryStatus.PAUSED) {
+      return RetryResult.SKIPPED_NOT_RETRIABLE;
     }
     int newAttempt = existing.getAttemptCount() + 1;
     if (newAttempt > NotificationDeliveryService.MAX_ATTEMPTS) {
@@ -326,7 +337,8 @@ public class NotificationDispatchOrchestrator {
     BLOCKED,
     DISABLED,
     NOT_FOUND,
-    SKIPPED_NOT_FAILED,
+    /** Renamed from {@code SKIPPED_NOT_FAILED} now that PAUSED-by-holiday is also retriable. */
+    SKIPPED_NOT_RETRIABLE,
     SKIPPED_MAX_ATTEMPTS,
     SKIPPED_NOT_EMAIL
   }
