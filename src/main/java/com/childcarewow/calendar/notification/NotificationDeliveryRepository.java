@@ -16,17 +16,37 @@ public interface NotificationDeliveryRepository extends JpaRepository<Notificati
   long countByStatus(DeliveryStatus status);
 
   /**
-   * Returns FAILED delivery rows eligible for retry. A row is eligible iff (a) its status is
-   * FAILED, (b) its attempt_count is below {@code maxAttempts}, (c) it was created before {@code
-   * cutoff} (implicit backoff — the retry job's tick interval is the minimum gap between attempts),
-   * and (d) no LATER attempt for the same {@code (notification_id, recipient_user_id, channel)}
-   * tuple exists. The NOT EXISTS clause prevents re-attempting tuples whose newer audit row already
-   * shows SENT / PAUSED / a higher attempt count.
+   * Returns delivery rows eligible for dispatch retry. Two trigger shapes:
+   *
+   * <ul>
+   *   <li><b>FAILED retry:</b> {@code status='FAILED' AND attempt_count < maxAttempts}.
+   *   <li><b>Holiday-resume reconnection:</b> {@code status='PAUSED'} AND {@code last_error} starts
+   *       with {@code 'Holiday: '} AND the underlying notification's {@code paused=false} (i.e. the
+   *       holiday-suppression resume job has already cleared the pause). Closes the gap that {@code
+   *       HolidaySuppressionResumeJob} leaves open — it unpauses notifications but doesn't itself
+   *       fire dispatch.
+   * </ul>
+   *
+   * <p>Both triggers share the rest of the eligibility filter: (a) created before {@code cutoff}
+   * (implicit backoff — the retry job's tick interval is the minimum gap between attempts), (b)
+   * {@code attempt_count < maxAttempts}, (c) no LATER attempt exists for the same {@code
+   * (notification_id, recipient_user_id, channel)} tuple. The NOT EXISTS clause prevents
+   * re-attempting tuples whose newer audit row already shows SENT / a different state / higher
+   * attempt count.
+   *
+   * <p><b>PAUSED-by-allowlist rows are NOT eligible.</b> The {@code last_error LIKE 'Holiday: %'}
+   * filter excludes {@code BLOCKED_BY_ALLOWLIST} + {@code EMAIL_DISABLED} reasons — those reflect
+   * dev-environment state, not transient conditions to retry past.
    */
   @Query(
       value =
-          "SELECT * FROM notification_deliveries d "
-              + "WHERE d.status = 'FAILED' "
+          "SELECT d.* FROM notification_deliveries d "
+              + "LEFT JOIN notifications n ON n.id = d.notification_id "
+              + "WHERE ("
+              + "  d.status = 'FAILED' "
+              + "  OR (d.status = 'PAUSED' AND d.last_error LIKE 'Holiday: %' "
+              + "      AND n.paused = false)"
+              + ") "
               + "AND d.attempt_count < :maxAttempts "
               + "AND d.created_at < :cutoff "
               + "AND NOT EXISTS ("
