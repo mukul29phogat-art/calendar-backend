@@ -1,5 +1,6 @@
 package com.childcarewow.calendar.conflict;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.UUID;
 import org.springframework.data.jpa.repository.JpaRepository;
@@ -16,6 +17,14 @@ public interface ConflictFlagRepository extends JpaRepository<ConflictFlag, UUID
    */
   List<ConflictFlag> findByEntityTypeAndEntityIdAndDismissedFalse(
       FlaggedEntity entityType, UUID entityId);
+
+  /**
+   * Batched variant for calendar-window reads — one query for many entity ids. Returns all active
+   * (non-dismissed) flags across the input set; callers group by {@code entity_id} in memory.
+   * Series-11 N+1 fix on {@code EventService.toViewWithJoins}.
+   */
+  List<ConflictFlag> findByEntityTypeAndEntityIdInAndDismissedFalse(
+      FlaggedEntity entityType, Collection<UUID> entityIds);
 
   /**
    * Hard-deletes every {@code DOUBLE_BOOKING} flag involving an event on either side of the pair.

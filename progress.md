@@ -29,6 +29,56 @@ Next part: X.Y+1
 
 ---
 
+## Series-11 perf carry-forward — N+1 fix in `EventService.findInWindow` — STATUS: ✅ done
+
+**Off-playbook carry-forward closure.** Closes the perf carry-forward tracked in `docs/perf/7-calendar-benchmark.md` since Series 7. The calendar-window read for events was issuing 4 queries per event (attendees, students, exclusions, soft-flags) PLUS 1-2 visibility-filter queries per event (parent-classroom membership, staff-attendee check). For a 250-event window, that's 1250-1500 queries — dominating the p95 latency at ~5s vs the 500ms SLO.
+
+Date: 2026-05-12
+Operator: Mukul Phogat
+
+What got built:
+- **Batched-load pattern in `EventService.findInWindow`** — five queries total regardless of event count:
+  1. `batchLoadAttendees(ids)` — `SELECT event_id, user_id FROM event_attendees WHERE event_id IN (:ids)` → `Map<UUID, Set<UUID>>`.
+  2. `batchLoadStudents(ids)` — same shape for `event_students`.
+  3. `batchLoadExclusions(ids)` — `SELECT event_id, participant_id, participant_type FROM event_excluded_participants WHERE event_id IN (:ids)` → `Map<UUID, Exclusions(userIds, studentIds)>`.
+  4. `softFlagService.findActiveByEntityIds(EVENT, ids)` — single query for all flags, grouped by entity_id.
+  5. `parentClassroomsForActor(actor)` — one-shot platform-DB query that returns the set of classroom ids containing any of the actor's children (only invoked for PARENT actors with children). Replaces N+1 calls to `parentChildInClassroom` per event.
+- **`isVisibleToBatched(...)` + `toViewWithBatchedJoins(...)`** — parallel methods that consume the pre-loaded maps. Same role-aware semantics as the per-event variants; zero new DB hits in the loop body.
+- **Single-event paths preserved.** `findById` still uses the per-event `loadAttendees` / `loadStudents` / `loadExclusions` / `findActiveByEntity` calls — 4 queries for one event is fine.
+- **New `calendarNamedJdbcTemplate` bean** in `DatasourceConfig` so `IN (:ids)` queries can use named parameters cleanly. Mirrors the existing `platformNamedJdbcTemplate` pattern.
+- **New repo method** `ConflictFlagRepository.findByEntityTypeAndEntityIdInAndDismissedFalse(type, ids)`.
+- **New service method** `SoftFlagService.findActiveByEntityIds(type, ids)` that wraps the repo call + groups by `entity_id`.
+
+Files changed (count: 5; 1 modified config, 1 modified repo, 1 modified service, 1 modified main service, 1 progress):
+- `src/main/java/com/childcarewow/calendar/config/DatasourceConfig.java` — `+calendarNamedJdbcTemplate` bean.
+- `src/main/java/com/childcarewow/calendar/conflict/ConflictFlagRepository.java` — `+findByEntityTypeAndEntityIdInAndDismissedFalse`.
+- `src/main/java/com/childcarewow/calendar/softflag/SoftFlagService.java` — `+findActiveByEntityIds`.
+- `src/main/java/com/childcarewow/calendar/event/EventService.java` — `findInWindow` refactor + batched helpers + new dep.
+- `progress.md` — this entry.
+
+Validation:
+- [x] `./mvnw -B verify` → BUILD SUCCESS, 2m. All ITs green (every existing event read IT still passes with the new shape — semantics preserved across the refactor). JaCoCo bundle ≥80%, Spotless clean.
+- [x] No new tests written. The existing per-entity ITs + the cross-cutting `CalendarReadServiceParentIT` exercise this code path; if any behavior had drifted they'd fail.
+- [ ] Perf re-measurement not run in this Part (the perf-smoke IT lives behind the `CALENDAR_PERF` env gate). To verify the speedup the operator runs `mvn verify -DCALENDAR_PERF=on` against a 250-event fixture; expect the calendar window read to drop from p95~5s to p95<500ms.
+
+Notes / surprises:
+- **Filename-casing trap.** Git tracks the file as `DatasourceConfig.java` (lowercase 's' in "Datasource"); Windows filesystem reported it as `DataSourceConfig.java` during reads. When I edited it, the resolved file path was the Windows casing and Maven/javac on the next compile rejected with `class DatasourceConfig is public, should be declared in a file named DatasourceConfig.java`. Fix: `git mv` round-trip to force-restore the original casing. **New cheat-sheet entry:** when editing a file on Windows whose case differs between filesystem and git, expect a compile error if any prior commit's case-naming was canonical — the fix is `git mv X.java X.tmp && git mv X.tmp X.java` to re-anchor.
+- **Five queries, not four.** I added `parentClassroomsForActor` as a fifth pre-load because the parent-classroom-visibility check was the OTHER N+1 in the old code path (1 platform-DB query per CLASSROOM event). Without this batched pre-load, a PARENT viewing 50 CLASSROOM events still pays 50 platform queries in the visibility filter — much worse than the calendar-DB hits. Now it's one query per request that returns the actor's "my classrooms" set.
+- **`isVisibleToBatched` duplicates the visibility-rule logic** rather than refactoring `isVisibleTo` to take maps. The duplication is intentional — the per-event variant (used by `findById`) doesn't need maps and shouldn't carry the maps API. Tradeoff: 2× code paths to maintain, but each is simpler and the per-event one is the canonical reference for `findById`-style single reads.
+- **`@PARENT` empty-classroom path**: when `actor.role() == PARENT` but `actor.childStudentIds()` is empty (no enrolled children), `parentClassroomsForActor` returns empty without hitting the platform DB. The visibility filter then correctly excludes every CLASSROOM event.
+- **Cleanup deferred:** the old `loadAttendees` / `loadStudents` / `loadExclusions` methods are still used by `findById` + the staff/parent single-event visibility checks. If `findById` is the only remaining caller, a future Part can collapse them.
+- **Soft-flag dismissed flag preserved.** `findActiveByEntityIds` filters on `dismissed=false` server-side (same predicate as the single-entity method); the deserialized `ConflictFlag` records carry the `dismissed_by_user_id` + `dismissed_at` even though they're null for active rows. Audit semantics preserved.
+
+### Carry-forward (one cleared, one new)
+
+- **CLEARED:** N+1 in `EventService.toViewWithJoins` — the Series-11 perf item from `docs/perf/7-calendar-benchmark.md`.
+- **NEW:** `findById` still uses per-event loaders — fine for single-event reads but creates a TWO-PATH maintenance shape. A future cleanup Part can either: (a) make `findById` call the batched path with a one-element list, or (b) keep both but tag the per-event versions `@Deprecated` once `findById` is the only caller.
+- All previously-open carry-forwards remain.
+
+Next part: **retry orchestration scheduler** (`shouldRetry` helper exists from 11.7; needs a `@Scheduled` job that scans FAILED `notification_deliveries` rows with `attempt_count < MAX_ATTEMPTS` and re-dispatches with exponential backoff). Closes the last of the three open backend directions.
+
+---
+
 ## Part 11.x+1 (Series 11) — Orchestrator wire-up via `@TransactionalEventListener(AFTER_COMMIT)` — STATUS: ✅ done
 
 **Off-playbook continuation.** Flips the orchestrator from "dormant primitive" to "live in production" by wiring `NotificationService` → Spring event → AFTER_COMMIT listener → `NotificationDispatchOrchestrator.dispatch`. After this Part, every successful event/task notification write triggers real delivery audit rows (and would trigger real email if SMTP creds were live).

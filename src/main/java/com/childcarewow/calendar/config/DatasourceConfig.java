@@ -62,4 +62,14 @@ public class DatasourceConfig {
       @Qualifier("platformJdbcTemplate") JdbcTemplate jdbc) {
     return new NamedParameterJdbcTemplate(jdbc);
   }
+
+  /**
+   * Named-parameter wrapper around the calendar JdbcTemplate. Backs {@code IN (:ids)} batched loads
+   * used by the calendar-window reads (Series-11 N+1 fix on {@code EventService}).
+   */
+  @Bean(name = "calendarNamedJdbcTemplate")
+  NamedParameterJdbcTemplate calendarNamedJdbcTemplate(
+      @Qualifier("calendarJdbcTemplate") JdbcTemplate jdbc) {
+    return new NamedParameterJdbcTemplate(jdbc);
+  }
 }

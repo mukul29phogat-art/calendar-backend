@@ -95,6 +95,21 @@ public class SoftFlagService {
   }
 
   /**
+   * Batched variant for calendar-window reads. Single query loads flags for all {@code entityIds};
+   * caller groups them by {@code getEntityId()} when assembling per-event views. Series-11 N+1 fix
+   * on {@code EventService}.
+   */
+  @Transactional(readOnly = true)
+  public java.util.Map<UUID, List<ConflictFlag>> findActiveByEntityIds(
+      FlaggedEntity entityType, java.util.Collection<UUID> entityIds) {
+    if (entityIds.isEmpty()) {
+      return java.util.Map.of();
+    }
+    return repo.findByEntityTypeAndEntityIdInAndDismissedFalse(entityType, entityIds).stream()
+        .collect(java.util.stream.Collectors.groupingBy(ConflictFlag::getEntityId));
+  }
+
+  /**
    * Marks a flag as dismissed and stamps {@code dismissed_by_user_id} + {@code dismissed_at}.
    * Idempotent: a second call on an already-dismissed flag is a no-op (no exception, no clock
    * update). Throws {@link NotFoundException} for an unknown id.
