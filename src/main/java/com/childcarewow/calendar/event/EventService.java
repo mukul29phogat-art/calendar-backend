@@ -42,6 +42,7 @@ public class EventService {
   private final NotificationService notificationService;
   private final JdbcTemplate calendarJdbc;
   private final NamedParameterJdbcTemplate platformNamedJdbc;
+  private final NamedParameterJdbcTemplate calendarNamedJdbc;
 
   @PersistenceContext private EntityManager em;
 
@@ -52,7 +53,8 @@ public class EventService {
       SoftFlagService softFlagService,
       NotificationService notificationService,
       @Qualifier("calendarJdbcTemplate") JdbcTemplate calendarJdbc,
-      @Qualifier("platformNamedJdbcTemplate") NamedParameterJdbcTemplate platformNamedJdbc) {
+      @Qualifier("platformNamedJdbcTemplate") NamedParameterJdbcTemplate platformNamedJdbc,
+      @Qualifier("calendarNamedJdbcTemplate") NamedParameterJdbcTemplate calendarNamedJdbc) {
     this.eventRepo = eventRepo;
     this.timezoneService = timezoneService;
     this.platformValidator = platformValidator;
@@ -60,6 +62,7 @@ public class EventService {
     this.notificationService = notificationService;
     this.calendarJdbc = calendarJdbc;
     this.platformNamedJdbc = platformNamedJdbc;
+    this.calendarNamedJdbc = calendarNamedJdbc;
   }
 
   /** GET /events/{id} — applies the same role-aware visibility filter as the list endpoint. */
@@ -95,7 +98,36 @@ public class EventService {
       throw new ValidationException("scope", "schoolId, from, and to are required");
     }
     List<Event> raw = eventRepo.findInWindow(schoolId, from, to, typeFilter);
-    return raw.stream().filter(e -> isVisibleTo(e, actor)).map(this::toViewWithJoins).toList();
+    if (raw.isEmpty()) {
+      return List.of();
+    }
+    // Pre-batch every join lookup so the filter + view-builder don't hit N+1. Five queries
+    // total (attendees, students, exclusions, soft-flags, parent's classroom membership)
+    // regardless of event count. Drops calendar p95 from ~5s to sub-second at 250 in-window
+    // events — Series-11 perf carry-forward closure (docs/perf/7-calendar-benchmark.md).
+    Set<UUID> ids = raw.stream().map(Event::getId).collect(java.util.stream.Collectors.toSet());
+    java.util.Map<UUID, Set<UUID>> attendeesByEvent = batchLoadAttendees(ids);
+    java.util.Map<UUID, Set<UUID>> studentsByEvent = batchLoadStudents(ids);
+    java.util.Map<UUID, Exclusions> exclusionsByEvent = batchLoadExclusions(ids);
+    java.util.Map<UUID, List<com.childcarewow.calendar.conflict.ConflictFlag>> flagsByEvent =
+        softFlagService.findActiveByEntityIds(FlaggedEntity.EVENT, ids);
+    Set<UUID> classroomsWithMyChild = parentClassroomsForActor(actor);
+
+    return raw.stream()
+        .filter(
+            e ->
+                isVisibleToBatched(
+                    e,
+                    actor,
+                    attendeesByEvent,
+                    studentsByEvent,
+                    exclusionsByEvent,
+                    classroomsWithMyChild))
+        .map(
+            e ->
+                toViewWithBatchedJoins(
+                    e, attendeesByEvent, studentsByEvent, exclusionsByEvent, flagsByEvent))
+        .toList();
   }
 
   // -- visibility -------------------------------------------------------------
@@ -229,6 +261,195 @@ public class EventService {
         students,
         exclusions,
         softFlagService.findActiveByEntity(FlaggedEntity.EVENT, e.getId()));
+  }
+
+  // -- batched join-table loaders + view builder (Series-11 N+1 fix) ---------
+
+  /**
+   * Single query loads ALL {@code (event_id, user_id)} attendee rows for the input ids and groups
+   * them in memory. Drop-in replacement for per-event {@code loadAttendees} calls inside the {@code
+   * findInWindow} loop.
+   */
+  private java.util.Map<UUID, Set<UUID>> batchLoadAttendees(Set<UUID> eventIds) {
+    if (eventIds.isEmpty()) {
+      return java.util.Map.of();
+    }
+    java.util.Map<UUID, Set<UUID>> out = new java.util.HashMap<>();
+    calendarNamedJdbc.query(
+        "SELECT event_id, user_id FROM event_attendees WHERE event_id IN (:ids)",
+        new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("ids", eventIds),
+        rs -> {
+          UUID eid = UUID.fromString(rs.getString(1));
+          UUID uid = UUID.fromString(rs.getString(2));
+          out.computeIfAbsent(eid, k -> new java.util.HashSet<>()).add(uid);
+        });
+    return out;
+  }
+
+  private java.util.Map<UUID, Set<UUID>> batchLoadStudents(Set<UUID> eventIds) {
+    if (eventIds.isEmpty()) {
+      return java.util.Map.of();
+    }
+    java.util.Map<UUID, Set<UUID>> out = new java.util.HashMap<>();
+    calendarNamedJdbc.query(
+        "SELECT event_id, student_id FROM event_students WHERE event_id IN (:ids)",
+        new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("ids", eventIds),
+        rs -> {
+          UUID eid = UUID.fromString(rs.getString(1));
+          UUID sid = UUID.fromString(rs.getString(2));
+          out.computeIfAbsent(eid, k -> new java.util.HashSet<>()).add(sid);
+        });
+    return out;
+  }
+
+  /**
+   * Single query loads ALL exclusions ({@code USER} + {@code STUDENT}) for the input event ids.
+   * Returned map has an {@link Exclusions} record per event id; events with no exclusions are
+   * absent from the map and the batched filter/view-builder coalesce to empty {@code Set}s.
+   */
+  private java.util.Map<UUID, Exclusions> batchLoadExclusions(Set<UUID> eventIds) {
+    if (eventIds.isEmpty()) {
+      return java.util.Map.of();
+    }
+    java.util.Map<UUID, Set<UUID>> userIds = new java.util.HashMap<>();
+    java.util.Map<UUID, Set<UUID>> studentIds = new java.util.HashMap<>();
+    calendarNamedJdbc.query(
+        "SELECT event_id, participant_id, participant_type FROM event_excluded_participants "
+            + "WHERE event_id IN (:ids)",
+        new org.springframework.jdbc.core.namedparam.MapSqlParameterSource("ids", eventIds),
+        rs -> {
+          UUID eid = UUID.fromString(rs.getString("event_id"));
+          UUID pid = UUID.fromString(rs.getString("participant_id"));
+          String type = rs.getString("participant_type");
+          if ("USER".equals(type)) {
+            userIds.computeIfAbsent(eid, k -> new java.util.HashSet<>()).add(pid);
+          } else {
+            studentIds.computeIfAbsent(eid, k -> new java.util.HashSet<>()).add(pid);
+          }
+        });
+    java.util.Map<UUID, Exclusions> out = new java.util.HashMap<>();
+    Set<UUID> seen = new java.util.HashSet<>(userIds.keySet());
+    seen.addAll(studentIds.keySet());
+    for (UUID eid : seen) {
+      out.put(
+          eid,
+          new Exclusions(
+              userIds.getOrDefault(eid, Set.of()), studentIds.getOrDefault(eid, Set.of())));
+    }
+    return out;
+  }
+
+  /**
+   * For PARENT actors, returns the set of classroom ids that contain at least one of the actor's
+   * children. Pre-loaded once at the top of {@code findInWindow} so the parent-classroom visibility
+   * check is a {@code Set.contains} instead of a per-event platform-DB hit.
+   */
+  private Set<UUID> parentClassroomsForActor(UserPrincipal actor) {
+    if (actor == null
+        || actor.role() != com.childcarewow.calendar.auth.Role.PARENT
+        || actor.childStudentIds().isEmpty()) {
+      return Set.of();
+    }
+    return new java.util.HashSet<>(
+        platformNamedJdbc.queryForList(
+            "SELECT DISTINCT classroom_id FROM students "
+                + "WHERE id IN (:ids) AND classroom_id IS NOT NULL AND deleted_at IS NULL",
+            new org.springframework.jdbc.core.namedparam.MapSqlParameterSource(
+                "ids", actor.childStudentIds()),
+            UUID.class));
+  }
+
+  /**
+   * Same role-aware visibility as {@link #isVisibleTo}, but reads its join data from the pre-
+   * batched maps. No per-event DB calls.
+   */
+  private boolean isVisibleToBatched(
+      Event e,
+      UserPrincipal actor,
+      java.util.Map<UUID, Set<UUID>> attendeesByEvent,
+      java.util.Map<UUID, Set<UUID>> studentsByEvent,
+      java.util.Map<UUID, Exclusions> exclusionsByEvent,
+      Set<UUID> classroomsWithMyChild) {
+    if (actor == null) {
+      return false;
+    }
+    return switch (actor.role()) {
+      case ORG_ADMIN -> actor.orgId().equals(e.getOrgId());
+      case SCHOOL_ADMIN -> actor.schoolIds().contains(e.getSchoolId());
+      case STAFF -> {
+        yield switch (e.getType()) {
+          case SCHOOL -> actor.schoolIds().contains(e.getSchoolId());
+          case CLASSROOM ->
+              e.getClassroomId() != null && actor.classroomIds().contains(e.getClassroomId());
+          case CUSTOM -> {
+            if (actor.id().equals(e.getOrganizerUserId())) {
+              yield true;
+            }
+            yield attendeesByEvent.getOrDefault(e.getId(), Set.of()).contains(actor.id());
+          }
+        };
+      }
+      case PARENT -> {
+        if (!e.isInviteParents()) {
+          yield false;
+        }
+        Exclusions excluded = exclusionsByEvent.getOrDefault(e.getId(), EMPTY_EXCLUSIONS);
+        if (excluded.userIds().contains(actor.id())) {
+          yield false;
+        }
+        for (UUID childId : actor.childStudentIds()) {
+          if (excluded.studentIds().contains(childId)) {
+            yield false;
+          }
+        }
+        yield switch (e.getType()) {
+          case SCHOOL -> actor.schoolIds().contains(e.getSchoolId());
+          case CLASSROOM ->
+              e.getClassroomId() != null && classroomsWithMyChild.contains(e.getClassroomId());
+          case CUSTOM -> {
+            Set<UUID> students = studentsByEvent.getOrDefault(e.getId(), Set.of());
+            for (UUID childId : actor.childStudentIds()) {
+              if (students.contains(childId)) {
+                yield true;
+              }
+            }
+            yield false;
+          }
+        };
+      }
+    };
+  }
+
+  private static final Exclusions EMPTY_EXCLUSIONS = new Exclusions(Set.of(), Set.of());
+
+  /**
+   * View builder that reads its join data from the pre-batched maps. Drop-in replacement for {@link
+   * #toViewWithJoins} inside the {@code findInWindow} loop.
+   */
+  private EventView toViewWithBatchedJoins(
+      Event e,
+      java.util.Map<UUID, Set<UUID>> attendeesByEvent,
+      java.util.Map<UUID, Set<UUID>> studentsByEvent,
+      java.util.Map<UUID, Exclusions> exclusionsByEvent,
+      java.util.Map<UUID, List<com.childcarewow.calendar.conflict.ConflictFlag>> flagsByEvent) {
+    List<UUID> attendees =
+        e.getType() == EventType.CUSTOM
+            ? List.copyOf(attendeesByEvent.getOrDefault(e.getId(), Set.of()))
+            : List.of();
+    List<UUID> students =
+        e.getType() == EventType.CUSTOM
+            ? List.copyOf(studentsByEvent.getOrDefault(e.getId(), Set.of()))
+            : List.of();
+    Exclusions excluded = exclusionsByEvent.getOrDefault(e.getId(), EMPTY_EXCLUSIONS);
+    List<EventView.ExcludedParticipantView> exclusionViews = new ArrayList<>();
+    for (UUID uid : excluded.userIds()) {
+      exclusionViews.add(new EventView.ExcludedParticipantView(uid, "USER"));
+    }
+    for (UUID sid : excluded.studentIds()) {
+      exclusionViews.add(new EventView.ExcludedParticipantView(sid, "STUDENT"));
+    }
+    return EventMapper.toView(
+        e, attendees, students, exclusionViews, flagsByEvent.getOrDefault(e.getId(), List.of()));
   }
 
   private List<EventView.ExcludedParticipantView> loadExcludedViews(UUID eventId) {
